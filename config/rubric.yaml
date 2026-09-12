@@ -91,6 +91,9 @@ gates:
       - "no C2C"
       - "must be on our payroll"
       - "\\bno (third[- ]part(y|ies)|corp[- ]to[- ]corp)\\b"
+  # Two sets, because the same word carries different weight in each place.
+  # Title: a requisition label. Anything here means "this is a pipeline, not a
+  # job", so it can be broad.
   evergreen_title:
     patterns:
       - "\\(all levels\\)"
@@ -98,6 +101,22 @@ gates:
       - "talent (pool|community|network)"
       - "future opportunities"
       - "speculative application"
+      # Seen live: "Forward Deployed Engineer, CE (Evergreen)".
+      - "\\bevergreen\\b"
+      - "(talent|candidate|hiring) pipeline"
+      - "expression of interest"
+      - "open application"
+  # Body: only phrases that cannot mean anything else. Deliberately excludes
+  # bare "evergreen" and bare "pipeline": most engineering descriptions mention
+  # a CI/CD or data pipeline, and gating on that would hide the best roles.
+  evergreen_body:
+    patterns:
+      - "talent (pool|community|network)"
+      - "future opportunities"
+      - "general application"
+      - "speculative application"
+      - "expression of interest"
+      - "(talent|candidate|hiring) pipeline"
 
   stale_after_days: 45
   # If nothing has come back in 10 days it is functionally a rejection: the median

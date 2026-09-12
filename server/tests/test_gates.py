@@ -119,3 +119,33 @@ def test_structured_field_still_wins_over_the_title():
         _profile(),
     )
     assert "GEO_FENCED" not in codes(hits)
+
+
+def test_evergreen_requisition_in_the_title_is_gated():
+    """Seen live: "Forward Deployed Engineer, CE (Evergreen)". An evergreen
+    requisition is a pipeline, not an opening."""
+    assert "EVERGREEN" in codes(gates.evaluate(
+        _posting(title="Forward Deployed Engineer, CE (Evergreen)"), _profile()))
+    assert "EVERGREEN" in codes(gates.evaluate(
+        _posting(title="Backend Engineer - Talent Pipeline"), _profile()))
+
+
+def test_pipeline_in_the_body_is_not_evergreen():
+    """Regression guard: matching "pipeline" anywhere would gate most data and
+    platform roles, since CI/CD and data pipelines are in every description."""
+    hits = gates.evaluate(
+        _posting(
+            title="Senior Data Engineer",
+            body_text="You will own our CI/CD pipeline and the ingestion pipeline.",
+        ),
+        _profile(),
+    )
+    assert "EVERGREEN" not in codes(hits)
+
+
+def test_evergreen_word_in_the_body_alone_is_not_gated():
+    hits = gates.evaluate(
+        _posting(body_text="We maintain an evergreen list of internal tools."),
+        _profile(),
+    )
+    assert "EVERGREEN" not in codes(hits)

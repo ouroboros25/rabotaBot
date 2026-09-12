@@ -17,7 +17,7 @@ from app.models import (
     EligibilityFlag, JobCluster, JobPosting, Profile, ProfileVariant, Score, Source,
 )
 from app.services import judge as judge_service
-from app.services import priors, scoring
+from app.services import priors, scoring, search_filters
 from app.services.gates import _seniority_rank
 
 logger = logging.getLogger(__name__)
@@ -85,11 +85,18 @@ def score_batch(db: Session, limit: int = 600) -> dict[str, int]:
 
     source_families = dict(db.execute(select(Source.id, Source.family)).all())
     prior_cache = {track: priors.posterior_map(db, track) for track in variants}
+    filters = search_filters.load(db)
+    # Excluded sources are skipped rather than disabled: the user may want the
+    # source collecting for another track while ignoring it in this ranking.
+    excluded_source_ids = {
+        sid for sid, key in db.execute(select(Source.id, Source.key)).all()
+        if key.lower() in filters.exclude_sources
+    }
 
     scored = 0
     for cluster in clusters:
         posting = postings.get(cluster.id)
-        if posting is None:
+        if posting is None or posting.source_id in excluded_source_ids:
             continue
         track = _pick_track(cluster, variants)
         variant = variants.get(track)
@@ -101,7 +108,7 @@ def score_batch(db: Session, limit: int = 600) -> dict[str, int]:
 
         fast = scoring.compute_fast(
             posting=posting, cluster=cluster, profile=profile, variant=variant,
-            idf=idf, source_prior=prior, on_own_ats=on_own_ats,
+            idf=idf, source_prior=prior, on_own_ats=on_own_ats, filters=filters,
         )
         seniority_fit = _seniority_fit(posting)
         track_weight = float((profile.track_weights or {}).get(track, 0.25))
@@ -155,7 +162,11 @@ def _upsert_score(db, cluster, track, fast, parts, priority, posting) -> Score:
     row.reach = parts["reach"]
     row.value = parts["value"]
     row.priority = priority
-    row.features = {"matched_skills": fast.detail.get("matched_skills", [])}
+    row.features = {
+        "matched_skills": fast.detail.get("matched_skills", []),
+        "boost_hits": fast.detail.get("boost_hits", []),
+        "keyword_boost": round(fast.keyword_boost, 3),
+    }
     row.explain = scoring.explain(fast, parts, priority)
     db.flush()
     return row
@@ -211,6 +222,7 @@ def judge_top(db: Session, top_k: int | None = None) -> dict[str, int]:
             title_fit=row.title_fit, freshness=row.freshness, comp_fit=row.comp_fit,
             source_prior=row.source_prior, ghost_risk=row.ghost_risk,
             crowding=row.crowding, s_fast=row.s_fast,
+            keyword_boost=float((row.features or {}).get("keyword_boost") or 0.0),
             detail=row.features or {},
         )
         priority, parts = scoring.compute_priority(

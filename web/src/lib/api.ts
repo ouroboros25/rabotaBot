@@ -25,8 +25,15 @@ export const api = {
   dashboard: () => request<any>('/dashboard'),
   activity: () => request<any[]>('/dashboard/activity'),
 
-  jobs: (params: Record<string, string | number> = {}) =>
-    request<any>(`/jobs?${new URLSearchParams(params as any)}`),
+  jobs: (params: Record<string, string | number | boolean> = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== '' && v !== null && v !== undefined && v !== false) qs.set(k, String(v));
+    }
+    return request<any>(`/jobs?${qs}`);
+  },
+  facets: () => request<any>('/jobs/facets'),
+  rescan: () => request<any>('/jobs/rescan', { method: 'POST' }),
   job: (id: number) => request<any>(`/jobs/${id}`),
   skipJob: (id: number, reason_code: string, note?: string) =>
     request<any>(`/jobs/${id}/skip`, {
@@ -63,6 +70,12 @@ export const api = {
   runSource: (id: number) => request<any>(`/sources/${id}/run`, { method: 'POST' }),
 
   profile: () => request<any>('/profile'),
+  searchFilters: () => request<any>('/profile/search-filters'),
+  saveSearchFilters: (patch: Record<string, unknown>) =>
+    request<any>('/profile/search-filters', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
   saveProfile: (patch: Record<string, unknown>) =>
     request<any>('/profile', { method: 'PUT', body: JSON.stringify(patch) }),
   saveVariant: (id: number, body: Record<string, unknown>) =>

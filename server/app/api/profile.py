@@ -6,8 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Profile, ProfileFact, ProfileVariant
+from app.models import Profile, ProfileFact, ProfileVariant, Source
 from app.models.enums import TRACKS
+from app.services import search_filters
 from app.services.factguard import _number_tokens, _ledger_corpus
 
 router = APIRouter()
@@ -36,6 +37,28 @@ class VariantBody(BaseModel):
     nice_to_have_skills: list[str] = []
     exclude_skills: list[str] = []
     enabled: bool = True
+
+
+class SearchFiltersBody(BaseModel):
+    """Every field is a knob from the Search page. All optional: a partial PUT
+    updates only what it names."""
+
+    require_any: list[str] | None = Field(
+        None, description="posting must contain at least one of these; empty = no requirement"
+    )
+    exclude: list[str] | None = Field(
+        None, description="reject if any of these appears anywhere in the posting"
+    )
+    exclude_title: list[str] | None = Field(
+        None, description="reject if the TITLE contains any of these"
+    )
+    boost: list[str] | None = Field(
+        None, description="raise the score when present; a nudge, not a filter"
+    )
+    exclude_companies: list[str] | None = None
+    exclude_sources: list[str] | None = None
+    max_age_days: int | None = Field(None, ge=0, le=365)
+    min_priority: float | None = Field(None, ge=0, le=1000)
 
 
 class FactBody(BaseModel):
@@ -106,6 +129,36 @@ def update_profile(body: ProfileBody, db: Session = Depends(get_db)) -> dict:
             setattr(profile, field, value)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/search-filters")
+def get_search_filters(db: Session = Depends(get_db)) -> dict:
+    filters = search_filters.load(db)
+    known_sources = [
+        {"key": key, "family": family}
+        for key, family in db.execute(
+            select(Source.key, Source.family).order_by(Source.key)
+        ).all()
+    ]
+    return {
+        **filters.as_dict(),
+        "available_sources": known_sources,
+        "boost_per_term": search_filters.BOOST_PER_TERM,
+        "boost_cap": search_filters.BOOST_CAP,
+    }
+
+
+@router.put("/search-filters")
+def put_search_filters(body: SearchFiltersBody, db: Session = Depends(get_db)) -> dict:
+    current = search_filters.load(db)
+    for field_name, value in body.model_dump(exclude_unset=True).items():
+        if value is not None:
+            setattr(current, field_name, value)
+    saved = search_filters.save(db, current)
+    db.commit()
+    # Returns the CLEANED values, so the UI shows exactly what the gates will
+    # apply rather than what was typed.
+    return saved.as_dict()
 
 
 @router.put("/variants/{variant_id}")

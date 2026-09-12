@@ -29,6 +29,7 @@ class FastScore:
     source_prior: float = 0.0
     ghost_risk: float = 0.0
     crowding: float = 0.0
+    keyword_boost: float = 0.0
     s_fast: float = 0.0
     detail: dict = field(default_factory=dict)
 
@@ -170,6 +171,7 @@ def compute_fast(
     source_prior: float,
     on_own_ats: bool,
     applicant_count: int | None = None,
+    filters=None,
 ) -> FastScore:
     w = load_rubric().get("weights", {})
     text = f"{posting.title or ''}\n{posting.body_text or ''}"
@@ -188,6 +190,14 @@ def compute_fast(
     ghost = ghost_risk(posting, cluster, on_own_ats)
     crowd = crowding(cluster, applicant_count)
 
+    # User boost terms are a bounded nudge on top of the weighted sum, never a
+    # replacement for fit: a long boost list must not outrank a genuine match.
+    boost, boost_hits = (0.0, [])
+    if filters is not None:
+        from app.services.search_filters import boost_score
+
+        boost, boost_hits = boost_score(filters, text)
+
     raw = (
         float(w.get("semantic", 0.30)) * sem
         + float(w.get("skill_coverage", 0.20)) * cov
@@ -196,13 +206,14 @@ def compute_fast(
         + float(w.get("comp_fit", 0.10)) * cfit
         + float(w.get("source_prior", 0.15)) * source_prior
     )
-    s_fast = 100.0 * raw * (1.0 - 0.5 * ghost)
+    s_fast = 100.0 * min(1.0, raw + boost) * (1.0 - 0.5 * ghost)
 
     return FastScore(
         semantic=sem, skill_coverage=cov, title_fit=tfit, freshness=fresh,
         comp_fit=cfit, source_prior=source_prior, ghost_risk=ghost, crowding=crowd,
+        keyword_boost=boost,
         s_fast=round(s_fast, 2),
-        detail={"matched_skills": matched},
+        detail={"matched_skills": matched, "boost_hits": boost_hits},
     )
 
 
@@ -331,4 +342,9 @@ def explain(fast: FastScore, parts: dict[str, float], priority: float) -> str:
     matched = fast.detail.get("matched_skills") or []
     if matched:
         lines.append("  matched: " + ", ".join(matched[:12]))
+    boost_hits = fast.detail.get("boost_hits") or []
+    if boost_hits:
+        lines.append(
+            f"  boost +{fast.keyword_boost:.2f}: " + ", ".join(boost_hits[:10])
+        )
     return "\n".join(lines)

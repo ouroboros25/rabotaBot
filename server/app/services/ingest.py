@@ -18,7 +18,7 @@ from app.models import (
     Company, EligibilityFlag, JobPosting, Profile, ProfileVariant, RawDocument,
     Setting, Source, SourceRun,
 )
-from app.services import dedup, gates, geo, slugs
+from app.services import dedup, gates, geo, search_filters, slugs
 from app.services.text import canonical_url, company_key, sha256, title_key
 
 logger = logging.getLogger(__name__)
@@ -217,6 +217,7 @@ def apply_gates(db: Session, limit: int = 2000, rescan: bool = False) -> dict[st
         for v in db.execute(select(ProfileVariant).where(ProfileVariant.enabled.is_(True)))
         .scalars()
     }
+    filters = search_filters.load(db)
 
     watermark_row = db.get(Setting, GATE_WATERMARK_KEY)
     if watermark_row is None:
@@ -256,7 +257,7 @@ def apply_gates(db: Session, limit: int = 2000, rescan: bool = False) -> dict[st
                 cluster.status = "gated"
                 continue
 
-        hits = gates.evaluate(posting, profile, variant)
+        hits = gates.evaluate(posting, profile, variant, filters)
         for hit in hits:
             db.add(EligibilityFlag(
                 job_posting_id=posting.id, code=hit.code,

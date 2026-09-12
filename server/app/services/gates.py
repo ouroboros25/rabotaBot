@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from app.models import JobPosting, Profile
-from app.services import geo
+from app.services import geo, search_filters
 from app.services.configload import load_rubric
 
 
@@ -33,6 +33,18 @@ def _compile(patterns: Iterable[str]) -> list[re.Pattern[str]]:
 
 
 _CACHE: dict[str, list[re.Pattern[str]]] = {}
+
+
+def reset_rule_cache() -> None:
+    """Drop compiled patterns so an edited rubric.yaml takes effect.
+
+    Both this cache and ``load_rubric``'s lru_cache live for the life of the
+    process, which is correct for a hot path but means a rule edit is invisible
+    to a long-running API worker until something clears them. The rescan
+    endpoint does exactly that, so "re-check everything" also means "re-read the
+    rules" rather than silently re-applying the old ones.
+    """
+    _CACHE.clear()
 
 
 def _rules(name: str) -> list[re.Pattern[str]]:
@@ -79,8 +91,15 @@ def _seniority_rank(posting: JobPosting) -> int | None:
     return None
 
 
-def evaluate(posting: JobPosting, profile: Profile, variant=None) -> list[GateHit]:
-    """Return every gate the posting trips. Empty list means it survives."""
+def evaluate(
+    posting: JobPosting, profile: Profile, variant=None, filters=None,
+) -> list[GateHit]:
+    """Return every gate the posting trips. Empty list means it survives.
+
+    ``filters`` carries the user's own keyword rules from the UI. They are
+    evaluated here rather than later so an excluded posting never costs an
+    embedding or an LLM call.
+    """
     gates_cfg = load_rubric().get("gates", {})
     hits: list[GateHit] = []
     text = f"{posting.title or ''}\n{posting.body_text or ''}"
@@ -114,13 +133,22 @@ def evaluate(posting: JobPosting, profile: Profile, variant=None) -> list[GateHi
         ("CLEARANCE", "clearance"),
         ("HYBRID_ONSITE", "hybrid_onsite"),
         ("EMPLOYMENT_MISMATCH", "employment_mismatch"),
-        ("EVERGREEN", "evergreen_title"),
     ):
         if any(h.code == code for h in hits):
             continue
         found = _first_match(_rules(rule_name), text)
         if found:
             hits.append(GateHit(code, found[0], found[1]))
+
+    # Evergreen uses two pattern sets. The title set is broad, because a label
+    # there means the requisition is a pipeline. The body set is narrow: matching
+    # "evergreen" or bare "pipeline" in a description would gate most data and
+    # platform roles, since CI/CD and data pipelines are in nearly all of them.
+    found = _first_match(_rules("evergreen_title"), posting.title or "")
+    if not found:
+        found = _first_match(_rules("evergreen_body"), posting.body_text or "")
+    if found:
+        hits.append(GateHit("EVERGREEN", found[0], found[1]))
 
     # --- seniority ---
     rank = _seniority_rank(posting)
@@ -141,6 +169,10 @@ def evaluate(posting: JobPosting, profile: Profile, variant=None) -> list[GateHi
                 hits.append(GateHit("STACK_EXCLUDE", skill, skill))
                 break
 
+    # --- user keyword filters ---
+    if filters is not None:
+        hits.extend(_keyword_hits(posting, filters, text, now))
+
     # --- freshness / expiry ---
     stale_days = int(gates_cfg.get("stale_after_days", 45))
     published = posting.first_published_at
@@ -153,6 +185,58 @@ def evaluate(posting: JobPosting, profile: Profile, variant=None) -> list[GateHi
         hits.append(GateHit("EXPIRED", "liveness", "liveness check failed"))
 
     return hits
+
+
+def _keyword_hits(posting: JobPosting, filters, text: str, now: datetime) -> list[GateHit]:
+    """Apply the filters the user typed in the UI."""
+    out: list[GateHit] = []
+    title = posting.title or ""
+
+    term = search_filters.first_match(filters.exclude_title, title)
+    if term:
+        out.append(GateHit("TITLE_EXCLUDE", term, title[:200]))
+
+    term = search_filters.first_match(filters.exclude, text)
+    if term:
+        out.append(GateHit("KEYWORD_EXCLUDE", term, _context(text, term)))
+
+    # An empty require list means "no requirement", not "require nothing", so the
+    # gate only fires when the user actually asked for something.
+    if filters.require_any and not search_filters.first_match(filters.require_any, text):
+        out.append(GateHit(
+            "KEYWORD_MISSING", "require_any",
+            "none of: " + ", ".join(filters.require_any[:12]),
+        ))
+
+    company = posting.company_name or ""
+    if company:
+        term = next(
+            (c for c in filters.exclude_companies if c in company.lower()), None
+        )
+        if term:
+            out.append(GateHit("COMPANY_EXCLUDE", term, company[:200]))
+
+    if filters.max_age_days and posting.first_published_at:
+        published = posting.first_published_at
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        age_days = (now - published).days
+        if age_days > filters.max_age_days:
+            out.append(GateHit(
+                "TOO_OLD", "max_age_days", f"{age_days}d > {filters.max_age_days}d",
+            ))
+
+    return out
+
+
+def _context(text: str, term: str, window: int = 60) -> str:
+    lowered = text.lower()
+    idx = lowered.find(term.lower())
+    if idx < 0:
+        return term
+    start = max(0, idx - window)
+    end = min(len(text), idx + len(term) + window)
+    return text[start:end].replace("\n", " ").strip()
 
 
 _PERIOD_MULTIPLIER = {

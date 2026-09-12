@@ -46,6 +46,12 @@ GATE_CODES = (
     "BLOCKLIST",
     "EVERGREEN",
     "DUPLICATE_OF",
+    # user-editable filters from the UI
+    "KEYWORD_EXCLUDE",
+    "KEYWORD_MISSING",
+    "TITLE_EXCLUDE",
+    "COMPANY_EXCLUDE",
+    "TOO_OLD",
 )
 
 DRAFT_TEMPLATES = (

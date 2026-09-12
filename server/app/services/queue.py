@@ -17,7 +17,7 @@ from app.models import (
     Application, ApplicationEvent, Draft, DraftCheck, DraftVersion, JobCluster,
     JobPosting, Profile, ProfileFact, ProfileVariant, Score, SkipFeedback, Source,
 )
-from app.services import approval, drafting, priors
+from app.services import approval, drafting, priors, search_filters
 from app.services.configload import load_rubric
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ def digest_candidates(db: Session, limit: int | None = None) -> list[dict]:
     limit = limit or settings.DAILY_DIGEST_SIZE
     skipped = select(SkipFeedback.cluster_id)
     actioned = select(Application.cluster_id)
+    filters = search_filters.load(db)
 
     rows = db.execute(
         select(Score, JobCluster)
@@ -56,6 +57,7 @@ def digest_candidates(db: Session, limit: int | None = None) -> list[dict]:
             JobCluster.status.in_(("scored", "queued")),
             JobCluster.id.notin_(skipped),
             JobCluster.id.notin_(actioned),
+            Score.priority >= filters.min_priority,
         )
         .order_by(Score.priority.desc())
         .limit(limit)

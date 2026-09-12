@@ -1,6 +1,7 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import Queue from './pages/Queue';
+import SearchPage from './pages/Search';
 import JobDetail from './pages/JobDetail';
 import Drafts from './pages/Drafts';
 import DraftDetail from './pages/DraftDetail';
@@ -11,6 +12,7 @@ import ProfilePage from './pages/Profile';
 const NAV = [
   { to: '/', label: 'Обзор', end: true },
   { to: '/queue', label: 'Очередь' },
+  { to: '/search', label: 'Поиск' },
   { to: '/drafts', label: 'Черновики' },
   { to: '/applications', label: 'Отклики' },
   { to: '/sources', label: 'Источники' },
@@ -50,6 +52,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/queue" element={<Queue />} />
           <Route path="/queue/:id" element={<JobDetail />} />
+          <Route path="/search" element={<SearchPage />} />
           <Route path="/drafts" element={<Drafts />} />
           <Route path="/drafts/:id" element={<DraftDetail />} />
           <Route path="/applications" element={<Applications />} />

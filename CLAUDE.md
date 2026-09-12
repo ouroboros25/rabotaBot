@@ -57,6 +57,18 @@ web/src/          React SPA mounted at /rabota/
   invalidates it. There is no bulk-approve and there must never be one.
 - **No internal auth by design.** The app sits behind Traefik `server-auth@file`
   (Telegram 2FA). Never publish a router without that middleware.
+- **`rubric.yaml` is cached for the life of the process.** `load_rubric` is
+  lru_cached and `gates._CACHE` holds compiled patterns, which is right for a hot
+  path but means an edited rule is invisible to a running worker. `POST
+  /jobs/rescan` clears both before re-gating; anywhere else, restart the service.
+- **Two places hold filters, and they are not interchangeable.** `rubric.yaml`
+  holds the scoring *method* and lives in git. The `search_filters` row in
+  `setting` holds the user's day-to-day keyword rules and is edited in the UI.
+  Never move a UI-editable knob into the YAML: it would need a redeploy to change.
+- **A gate matched against the body needs a different pattern set than one
+  matched against the title.** `evergreen_title` is broad because a label in a
+  title means the requisition is a pipeline; `evergreen_body` is narrow because
+  "pipeline" in a description is just CI/CD and gating on it hides the best roles.
 - **TDD on bugs.** Every bug found here gets a failing test first. The suite in
   `server/tests/` is almost entirely regressions from live runs; keep it that way.
 
