@@ -33,6 +33,11 @@ def ingest_sweep() -> dict:
 
 @celery_app.task(name="rabota.ingest.gates")
 def ingest_gates() -> dict:
+    """Gate whatever arrived since the last run.
+
+    Bounded per run by the watermark, so a large backlog drains over a few ticks
+    instead of blocking one long transaction.
+    """
     with session_scope() as db:
         return ingest.apply_gates(db)
 

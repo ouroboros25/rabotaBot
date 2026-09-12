@@ -3,7 +3,7 @@
 Commands
   seed       seed sources + profile from config/ (idempotent, runs on prod start)
   ingest     run every due source once, synchronously
-  gates      apply hard gates to ungated postings
+  gates      apply hard gates (use --all to re-gate everything after a rule change)
   score      run the deterministic scorer
   judge      run the LLM judge over the top of the queue
   digest     print what the next digest would contain
@@ -41,10 +41,29 @@ def _ingest() -> None:
 
 
 def _gates() -> None:
+    """python -m app.cli gates [--all]
+
+    --all re-gates the whole corpus. Use it after changing a rule in
+    rubric.yaml, so the new gate applies retroactively instead of only to
+    postings collected from now on.
+    """
     from app.services.ingest import apply_gates
 
+    rescan = "--all" in sys.argv
     with session_scope() as db:
-        print(json.dumps(apply_gates(db), indent=2))
+        first = apply_gates(db, rescan=rescan)
+        db.commit()
+        totals = {k: v for k, v in first.items()}
+        if rescan:
+            # Walk the whole corpus, not just the first batch.
+            while True:
+                batch = apply_gates(db)
+                db.commit()
+                if not batch.get("_processed"):
+                    break
+                for code, count in batch.items():
+                    totals[code] = totals.get(code, 0) + count
+        print(json.dumps(totals, indent=2))
 
 
 def _score() -> None:

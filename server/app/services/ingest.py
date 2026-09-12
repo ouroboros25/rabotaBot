@@ -10,13 +10,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.connectors import build as build_connector
 from app.models import (
     Company, EligibilityFlag, JobPosting, Profile, ProfileVariant, RawDocument,
-    Source, SourceRun,
+    Setting, Source, SourceRun,
 )
 from app.services import dedup, gates, geo, slugs
 from app.services.text import canonical_url, company_key, sha256, title_key
@@ -191,8 +191,22 @@ def _upsert_posting(db: Session, source: Source, item) -> tuple[bool, bool]:
     return True, False
 
 
-def apply_gates(db: Session, limit: int = 2000) -> dict[str, int]:
-    """Run stage-0 gates over postings that have not been gated yet."""
+GATE_WATERMARK_KEY = "gates_watermark_posting_id"
+
+
+def apply_gates(db: Session, limit: int = 2000, rescan: bool = False) -> dict[str, int]:
+    """Run stage-0 gates over postings that have not been gated yet.
+
+    Progress is tracked with a monotonic id watermark rather than "postings with
+    no flags". The obvious version selects flagless postings newest-first, but a
+    posting that legitimately passes every gate stays flagless forever, so it is
+    re-selected on every run and the oldest part of the corpus is never reached.
+    That is not theoretical: it left the entire Hacker News intake ungated,
+    because those rows have the lowest ids.
+
+    ``rescan=True`` resets the watermark, which is what you want after changing a
+    rule in rubric.yaml: new gates should apply retroactively.
+    """
     profile = db.execute(select(Profile).limit(1)).scalar_one_or_none()
     if profile is None:
         logger.warning("no profile configured; skipping gates")
@@ -204,11 +218,22 @@ def apply_gates(db: Session, limit: int = 2000) -> dict[str, int]:
         .scalars()
     }
 
+    watermark_row = db.get(Setting, GATE_WATERMARK_KEY)
+    if watermark_row is None:
+        watermark_row = Setting(key=GATE_WATERMARK_KEY, value={"last_id": 0})
+        db.add(watermark_row)
+        db.flush()
+    if rescan:
+        watermark_row.value = {"last_id": 0}
+        db.execute(delete(EligibilityFlag))
+        logger.info("gate rescan requested: watermark reset, flags cleared")
+
+    last_id = int((watermark_row.value or {}).get("last_id", 0))
+
     postings = db.execute(
         select(JobPosting)
-        .outerjoin(EligibilityFlag, EligibilityFlag.job_posting_id == JobPosting.id)
-        .where(EligibilityFlag.id.is_(None))
-        .order_by(JobPosting.id.desc())
+        .where(JobPosting.id > last_id)
+        .order_by(JobPosting.id.asc())
         .limit(limit)
     ).scalars().all()
 
@@ -239,19 +264,22 @@ def apply_gates(db: Session, limit: int = 2000) -> dict[str, int]:
             ))
             counts[hit.code] = counts.get(hit.code, 0) + 1
         if hits:
-            # The cluster is only killed if EVERY posting in it is gated: one board
+            # Kill the cluster only when EVERY posting in it is gated: one board
             # may carry a truncated description that trips a false positive.
             siblings = db.execute(
                 select(JobPosting.id).where(JobPosting.cluster_id == cluster.id)
             ).scalars().all()
-            gated = db.execute(
+            gated = set(db.execute(
                 select(EligibilityFlag.job_posting_id)
                 .where(EligibilityFlag.job_posting_id.in_(siblings))
                 .distinct()
-            ).scalars().all()
-            if set(siblings) <= set(gated) | {posting.id}:
+            ).scalars().all())
+            if set(siblings) <= gated | {posting.id}:
                 cluster.status = "gated"
 
+    if postings:
+        watermark_row.value = {"last_id": postings[-1].id}
+        counts["_processed"] = len(postings)
     return counts
 
 
