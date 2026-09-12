@@ -5,12 +5,12 @@
 # server-auth@file (auth-gateway ForwardAuth, Telegram 2FA). Do not remove it.
 services:
   rabota-db:
-    ports: []
+    ports: !override []
     networks: [rabota-net]
     restart: always
 
   rabota-redis:
-    ports: []
+    ports: !override []
     networks: [rabota-net]
     restart: always
 
@@ -22,7 +22,7 @@ services:
       - ./config:/app/config:ro
       - rabota-artifacts:/var/lib/rabota/artifacts
     networks: [rabota-net, proxy, free_llm_api_gateway-net]
-    ports: []
+    ports: !override []
     command:
       - sh
       - -c
@@ -74,7 +74,7 @@ services:
       target: prod
     volumes: !override []
     networks: [rabota-net, proxy]
-    ports: []
+    ports: !override []
     command: ["nginx", "-g", "daemon off;"]
     restart: always
     labels:
