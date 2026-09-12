@@ -195,7 +195,7 @@ def reapply(
     }
 
 
-@router.get("/facets")@router.get("/facets")
+@router.get("/facets")
 def facets(db: Session = Depends(get_db)) -> dict:
     """What is actually in the queue right now, for populating filter controls."""
     rows = db.execute(
