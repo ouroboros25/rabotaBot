@@ -1,0 +1,32 @@
+# secrets
+.env
+.env.local
+*.pem
+*.key
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+celerybeat-schedule*
+htmlcov/
+.coverage
+
+# node
+node_modules/
+dist/
+.vite/
+
+# runtime artifacts
+server/var/
+artifacts/
+*.log
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,134 @@
+# The scoring rubric is the USER's, verbatim. It is passed into the LLM judge
+# unchanged and the weights below drive the deterministic pass.
+#
+# Two reasons this lives in config and not in the model:
+#   1. Interpretability: you can always answer "why did it rank this 847?"
+#   2. Compliance: Upwork API & MCP Terms 5.9 forbids an agent "independently
+#      ranking, scoring, or filtering results using additional criteria the Agent
+#      itself determines". Config-declared criteria are demonstrably yours,
+#      with a git history to prove it.
+
+version: 1
+
+# ---- Deterministic fast score (stage 1) ----
+weights:
+  semantic: 0.30        # cosine(profile variant, posting)
+  skill_coverage: 0.20  # share of required skills you actually have
+  title_fit: 0.10
+  freshness: 0.15       # exp(-age_hours / 168)
+  comp_fit: 0.10
+  source_prior: 0.15    # Beta-Binomial posterior reply rate for this source
+
+# Ghost-job risk multiplier: S_fast is scaled by (1 - 0.5 * ghost_risk).
+# 18-22% of postings are ghosts, and the signals below are the cheap ones.
+ghost_risk:
+  stale_unchanged_30d: 0.35     # older than 30d and updated_at never moved
+  reposted_same_body: 0.25      # identical description hash seen in a prior month
+  evergreen_title: 0.10         # "Software Engineer (All Levels)", "General Application"
+  aggregator_only: 0.10         # present on aggregators but absent from the company's own ATS feed
+  no_apply_url: 0.20
+
+# Crowding: a posting every scanner found is, by that fact, a worse posting.
+# Reply rate falls from 9.44% at one automated bidder to 2.11% at 11+.
+crowding:
+  fan_out_divisor: 5            # cluster fan_out normalised against this
+  applicant_divisor: 200        # where the source exposes an applicant count
+
+# ---- Final ranking ----
+# Priority = 1000 * Fit^1.4 * Trust * (0.30 + 0.70*Reach) * (0.40 + 0.60*Value)
+# Fit is raised to 1.4 on purpose: it is convex, so 0.9 fit is worth 2.6x a 0.6 fit,
+# not 1.5x. With a hard weekly cap the ranking must be aggressive about the top of
+# the distribution rather than fair to the middle.
+ranking:
+  fit_exponent: 1.4
+  fit:    {llm: 0.35, semantic: 0.25, skill_coverage: 0.25, seniority: 0.15}
+  reach:  {source_prior: 0.40, freshness: 0.25, warm_path: 0.25, uncrowded: 0.10}
+  value:  {comp_fit: 0.55, track_weight: 0.25, strategic_fit: 0.20}
+
+# ---- LLM judge calibration anchors ----
+# Without anchors a 0-10 scale means nothing and the model drifts month to month.
+judge_anchors:
+  "9-10": "every must-have present, compensation above target, explicitly globally remote, posted under 48h"
+  "7-8":  "all must-haves present, one nice-to-have missing, or compensation not stated"
+  "5-6":  "transferable but not a direct match, or eligibility is ambiguous"
+  "3-4":  "plausible only with a stretch narrative"
+  "0-2":  "disqualified, or wrong discipline entirely"
+
+# ---- Hard gates (stage 0), evaluated before any embedding or LLM call ----
+# Kills 40-60% of the corpus for free. Every rejection stores a reason code,
+# and repeated reason codes are what the rule miner turns into new gates.
+gates:
+  geo_fenced:
+    patterns:
+      - "must be (located|based|residing) in"
+      - "must reside in"
+      - "authoriz(ed|ation) to work in the (US|United States|UK) without sponsorship"
+      - "US citizens? only"
+      - "EU[- ]based only"
+      - "(only|exclusively) (considering|hiring) candidates (in|from)"
+      - "work from (within )?(the )?(US|USA|United States|UK|Canada)"
+      - "\\b(US|USA|U\\.S\\.|United States|UK|EU|EEA|Canada|LATAM|India)[- ]only\\b"
+      - "\\((?:US|USA|U\\.S\\.|United States|UK|EU|Canada)[ -]only\\)"
+      - "\\b(?:US|USA|United States|UK|EU|Canada)[- ]based (?:candidates )?only\\b"
+      - "onshore only"
+      - "no (?:visa )?sponsorship"
+  clearance:
+    patterns:
+      - "security clearance"
+      - "\\bSC/DV\\b"
+      - "Public Trust"
+      - "\\bITAR\\b"
+      - "\\bTS/SCI\\b"
+  hybrid_onsite:
+    patterns:
+      - "\\bhybrid\\b"
+      - "[0-9] days (a week )?(in|at) (the )?office"
+      - "onsite (required|presence)"
+      - "in[- ]office"
+  employment_mismatch:
+    patterns:
+      - "\\bW2 only\\b"
+      - "no C2C"
+      - "must be on our payroll"
+      - "\\bno (third[- ]part(y|ies)|corp[- ]to[- ]corp)\\b"
+  evergreen_title:
+    patterns:
+      - "\\(all levels\\)"
+      - "general application"
+      - "talent (pool|community|network)"
+      - "future opportunities"
+      - "speculative application"
+
+  stale_after_days: 45
+  # If nothing has come back in 10 days it is functionally a rejection: the median
+  # time-to-archive for non-interviewed candidates is 6 days.
+  presumed_dead_after_days: 10
+  follow_up_after_days: 4
+
+# ---- Anti-slop: enforced by regex after generation, not requested in the prompt ----
+# 33.5% of hiring managers spot an AI-written application in under 20 seconds.
+# Prompt instructions do not fix that. Checks do.
+banlist:
+  - "I am (excited|thrilled|delighted)"
+  - "passionate about"
+  - "I came across"
+  - "perfect fit"
+  - "leverage my"
+  - "dynamic environment"
+  - "hit the ground running"
+  - "wealth of experience"
+  - "\\bdelve\\b"
+  - "in today's fast[- ]paced"
+  - "I would love the opportunity"
+  - "seamlessly"
+  - "robust solutions"
+  - "cutting[- ]edge"
+  - "synergy"
+  - "game[- ]chang(er|ing)"
+
+draft_limits:
+  cold_email_words: 80        # sub-80-word emails correlate with elite reply rates
+  upwork_proposal_words: 150
+  ats_cover_words: 250
+  cofounder_pitch_words: 180
+  novelty_max_similarity: 0.85   # vs the last 20 approved drafts

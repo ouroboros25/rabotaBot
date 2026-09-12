@@ -1,0 +1,286 @@
+# Source registry. Adding a source is a row here, not code.
+#
+# legal_tier:
+#   0 = publisher-intended machine interface, no auth, no ToS friction  <- build here
+#   1 = the user's own inbox / own session through the platform's own channel
+#   2 = public HTML explicitly permitted by robots.txt, polite rate, never authenticated
+#   3 = needs a browser engine; liveness checks only
+#   4 = forbidden, never implemented (LinkedIn, Indeed UI, captcha solving, proxies)
+#
+# tracks: fte | freelance | outstaff | equity
+#
+# Every endpoint below was probed live on 2026-09-12 and returned HTTP 200.
+
+version: 1
+
+defaults:
+  rate_limit_rps: 1.0
+  cadence_minutes: 180
+  enabled: true
+
+sources:
+
+  # ---------- Aggregators: broad corpus + the ATS slugs we harvest from them ----------
+
+  - key: himalayas
+    family: json_api_generic
+    legal_tier: 0
+    tracks: [fte, outstaff, freelance]
+    cadence_minutes: 120
+    # The single most valuable free feed: it is the only one that ships explicit
+    # country AND timezone eligibility, which is exactly what kills a global-remote
+    # candidate silently everywhere else.
+    params:
+      url: https://himalayas.app/jobs/api
+      query: {limit: 100}
+      items_path: jobs
+      cursor_param: cursor
+      cursor_path: nextCursor
+      max_pages: 5
+      # Himalayas announces breaking changes in an in-band "comments" field.
+      watch_fields: [comments]
+    field_map:
+      external_id: guid
+      title: title
+      company_name: companyName
+      company_slug: companySlug
+      apply_url: applicationLink
+      posted_at: pubDate
+      expires_at: expiryDate
+      comp_min: minSalary
+      comp_max: maxSalary
+      comp_currency: currency
+      comp_period: salaryPeriod
+      seniority: seniority
+      employment_type: employmentType
+      countries_allowed: locationRestrictions
+      timezones_allowed: timezoneRestrictions
+      body: description
+      tags: categories
+
+  - key: remoteok
+    family: json_api_generic
+    legal_tier: 0
+    tracks: [fte, freelance]
+    cadence_minutes: 30
+    # Small and newest-first. Used as an early-warning ticker, not as a corpus.
+    # Their ToS asks for a dofollow backlink, which is fine for a private tool but
+    # blocks any public redeployment of this data.
+    params:
+      url: https://remoteok.com/api
+      items_path: ""
+      skip_first_item: true      # element 0 is a legal/ToS notice, not a job
+    field_map:
+      external_id: id
+      title: position
+      company_name: company
+      apply_url: apply_url
+      url: url
+      posted_at: date
+      comp_min: salary_min
+      comp_max: salary_max
+      location_raw: location
+      body: description
+      tags: tags
+
+  - key: arbeitnow
+    family: json_api_generic
+    legal_tier: 0
+    tracks: [fte, outstaff]
+    cadence_minutes: 180
+    # Germany/EU heavy. Attribution requested by the publisher; we link back.
+    params:
+      url: https://www.arbeitnow.com/api/job-board-api
+      items_path: data
+      page_param: page
+      max_pages: 3
+    field_map:
+      external_id: slug
+      title: title
+      company_name: company_name
+      apply_url: url
+      posted_at: created_at
+      location_raw: location
+      remote_flag: remote
+      body: description
+      tags: tags
+      employment_type: job_types
+
+  - key: jobicy
+    family: json_api_generic
+    legal_tier: 0
+    tracks: [fte]
+    cadence_minutes: 240
+    params:
+      url: https://jobicy.com/api/v2/remote-jobs
+      query: {count: 100, geo: anywhere, industry: engineering}
+      items_path: jobs
+    field_map:
+      external_id: id
+      title: jobTitle
+      company_name: companyName
+      apply_url: url
+      posted_at: pubDate
+      location_raw: jobGeo
+      seniority: jobLevel
+      employment_type: jobType
+      body: jobDescription
+
+  - key: fourdayweek
+    family: json_api_generic
+    legal_tier: 0
+    tracks: [fte, outstaff]
+    cadence_minutes: 240
+    params:
+      url: https://4dayweek.io/api/jobs
+      items_path: jobs
+      page_param: page
+      max_pages: 4
+      url_template: "https://4dayweek.io/remote-job/{slug}"
+    field_map:
+      external_id: id
+      title: title
+      company_name: company_name
+      posted_at: posted
+      location_raw: locations
+      seniority: level
+      remote_flag: work_arrangement
+      slug: slug
+      expired_flag: is_expired
+
+  - key: wwr_programming
+    family: rss_feed
+    legal_tier: 0
+    tracks: [fte]
+    cadence_minutes: 60
+    # Paid-only posting keeps the junk out; best engagement of any remote board.
+    params:
+      url: https://weworkremotely.com/categories/remote-programming-jobs.rss
+
+  - key: wwr_devops
+    family: rss_feed
+    legal_tier: 0
+    tracks: [fte, outstaff]
+    cadence_minutes: 60
+    params:
+      url: https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss
+
+  - key: hn_whoishiring
+    family: hn_algolia
+    legal_tier: 0
+    tracks: [fte, equity, outstaff]
+    cadence_minutes: 360
+    # ~260 real ads/month, written by the hiring engineers themselves. Thread rules
+    # ban recruiters and job boards, which structurally removes the ghost-job motive.
+    params:
+      thread_query: "Ask HN: Who is hiring?"
+      author: whoishiring
+      max_threads: 2
+      max_comments: 400
+
+  # ---------- Cross-tenant ATS search ----------
+
+  - key: workable_remote_eng
+    family: workable_search
+    legal_tier: 0
+    tracks: [fte, outstaff]
+    cadence_minutes: 180
+    params:
+      query: "remote software engineer"
+      max_pages: 5
+      # Unsupported filter params silently zero totalSize. Do not add &remote=true.
+
+  - key: workable_remote_dotnet
+    family: workable_search
+    legal_tier: 0
+    tracks: [fte, outstaff]
+    cadence_minutes: 240
+    params:
+      query: ".NET developer remote"
+      max_pages: 3
+
+  # ---------- Company ATS boards (seeded; more are harvested automatically) ----------
+
+  - key: gh_stripe
+    family: greenhouse_board
+    legal_tier: 0
+    tracks: [fte]
+    params: {board_token: stripe}
+    company: {name: Stripe}
+
+  - key: gh_databricks
+    family: greenhouse_board
+    legal_tier: 0
+    tracks: [fte]
+    params: {board_token: databricks}
+    company: {name: Databricks}
+
+  - key: gh_gitlab
+    family: greenhouse_board
+    legal_tier: 0
+    tracks: [fte]
+    params: {board_token: gitlab}
+    company: {name: GitLab}
+
+  - key: gh_cloudflare
+    family: greenhouse_board
+    legal_tier: 0
+    tracks: [fte]
+    params: {board_token: cloudflare}
+    company: {name: Cloudflare}
+
+  - key: gh_airbnb
+    family: greenhouse_board
+    legal_tier: 0
+    tracks: [fte]
+    params: {board_token: airbnb}
+    company: {name: Airbnb}
+
+  - key: gh_dropbox
+    family: greenhouse_board
+    legal_tier: 0
+    tracks: [fte]
+    params: {board_token: dropbox}
+    company: {name: Dropbox}
+
+  - key: lever_palantir
+    family: lever_postings
+    legal_tier: 0
+    tracks: [fte]
+    params: {site: palantir}
+    company: {name: Palantir}
+
+  - key: ashby_openai
+    family: ashby_board
+    legal_tier: 0
+    tracks: [fte, equity]
+    params: {board: openai}
+    company: {name: OpenAI}
+
+  - key: ashby_ramp
+    family: ashby_board
+    legal_tier: 0
+    tracks: [fte, equity]
+    params: {board: ramp}
+    company: {name: Ramp}
+
+  - key: ashby_linear
+    family: ashby_board
+    legal_tier: 0
+    tracks: [fte, equity]
+    params: {board: linear}
+    company: {name: Linear}
+
+  - key: ashby_vanta
+    family: ashby_board
+    legal_tier: 0
+    tracks: [fte, equity]
+    params: {board: vanta}
+    company: {name: Vanta}
+
+  - key: ashby_posthog
+    family: ashby_board
+    legal_tier: 0
+    tracks: [fte, equity]
+    params: {board: posthog}
+    company: {name: PostHog}

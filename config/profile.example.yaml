@@ -1,0 +1,115 @@
+# Seed profile. Loaded into the DB on first start; after that the UI is the
+# source of truth (Settings -> Profile). Editing this file again only matters
+# for a fresh database.
+#
+# The fact ledger is the important part: the drafting engine may only SELECT,
+# ORDER and REPHRASE these facts. It cannot introduce a number, a company, a
+# tool or a date that is not here. That is a correctness control, not a style
+# preference: every AI resume tool on the market has been caught fabricating.
+
+display_name: "Oleksandr"
+timezone: "Europe/Warsaw"
+countries_eligible: ["UA", "PL"]
+min_overlap_hours: 4          # required daily overlap with the team's core hours
+entity_status: "own_entity"   # own_entity | sole_trader | individual
+eor_ready: true
+
+rate_floor_hourly: 45
+rate_target_hourly: 85
+comp_floor_annual: 90000
+comp_currency: "USD"
+
+# Relative appetite per track. Used in the Value term of the ranking formula.
+track_weights:
+  fte: 0.35
+  outstaff: 0.30
+  freelance: 0.20
+  equity: 0.15
+
+weekly_send_cap: 18
+
+variants:
+  - track: fte
+    headline: "Senior/Principal backend engineer, .NET + Azure"
+    target_titles:
+      - "Senior Software Engineer"
+      - "Staff Software Engineer"
+      - "Principal Engineer"
+      - "Backend Engineer"
+      - "Platform Engineer"
+    must_have_skills: [dotnet, csharp, azure, sql]
+    nice_to_have_skills: [react, typescript, kubernetes, terraform, bicep, postgres, ci/cd]
+    exclude_skills: [php, wordpress, salesforce, sharepoint]
+
+  - track: outstaff
+    headline: "Contract backend/platform engineer, 6-12 months, global remote"
+    target_titles:
+      - "Contract Software Engineer"
+      - "Backend Contractor"
+      - "Cloud Engineer"
+      - "DevOps Engineer"
+    must_have_skills: [dotnet, azure]
+    nice_to_have_skills: [aws, kubernetes, terraform, python, node]
+    exclude_skills: [php, wordpress]
+
+  - track: freelance
+    headline: "AI integration and backend automation for startups"
+    target_titles:
+      - "AI Engineer"
+      - "Integration Engineer"
+      - "Automation Engineer"
+      - "Backend Developer"
+    must_have_skills: [python, api]
+    nice_to_have_skills: [llm, openai, rag, fastapi, azure, react]
+    exclude_skills: [wordpress, shopify, design]
+
+  - track: equity
+    headline: "Technical co-founder / founding engineer"
+    target_titles:
+      - "Founding Engineer"
+      - "Technical Co-Founder"
+      - "CTO"
+      - "Head of Engineering"
+    must_have_skills: []
+    nice_to_have_skills: [dotnet, python, azure, llm, react]
+    exclude_skills: []
+
+# ---- Fact ledger ----
+# type: role | metric | artifact | legal | identity | skill
+facts:
+  - key: F001
+    type: role
+    payload:
+      org: "Varyence"
+      title: "Principal Engineer / Fractional CTO"
+      from: "2021-03"
+      to: "present"
+      stack: [dotnet, azure, react, bicep, azure-devops]
+    verifiable_by: "references on request"
+
+  - key: F010
+    type: skill
+    payload:
+      primary: [dotnet, csharp, azure, react, typescript, postgres, docker]
+      secondary: [python, fastapi, kubernetes, terraform, node]
+      ai: [azure-ai-foundry, openai-api, rag, prompt-engineering]
+
+  - key: F020
+    type: legal
+    payload:
+      claim: "invoices through a registered entity; onboards via Deel or Remote as contractor"
+
+  - key: F021
+    type: identity
+    payload:
+      claim: "GPG-signed commits; verifiable public identity; video-on interviews; references on request"
+    # Not filler. A non-local candidate applying to a US remote role in 2026 meets an
+    # identity-verification regime built to catch offshore fraud. Pre-empting the
+    # objection costs one sentence; waiting for it costs the application.
+
+  # Add your own measurable outcomes here. A draft cannot cite a number that is
+  # not in this ledger, so an empty ledger produces vague, generic letters.
+  # - key: F030
+  #   type: metric
+  #   payload: {claim: "cut p95 checkout latency 820ms -> 190ms", scope: F001}
+  #   verifiable_by: "public postmortem talk"

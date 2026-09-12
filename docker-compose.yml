@@ -1,0 +1,145 @@
+# Dev / shared baseline. Host ports are exposed for debugging only.
+# Production adds docker-compose.prod.yml on top (no host ports, Traefik labels).
+services:
+  rabota-db:
+    image: postgres:16-alpine
+    container_name: rabota-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rabota}
+      POSTGRES_USER: ${POSTGRES_USER:-rabota}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rabota}
+    volumes:
+      - rabota-db-data:/var/lib/postgresql/data
+    networks:
+      - rabota-net
+    ports:
+      - "${POSTGRES_HOST_PORT:-5441}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rabota} -d ${POSTGRES_DB:-rabota}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  rabota-redis:
+    image: redis:7-alpine
+    container_name: rabota-redis
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - rabota-redis-data:/data
+    networks:
+      - rabota-net
+    ports:
+      - "${REDIS_HOST_PORT:-6386}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  rabota-api:
+    build:
+      context: ./server
+      target: dev
+    image: rabota-backend
+    container_name: rabota-api
+    env_file: [.env]
+    volumes:
+      - ./server:/app
+      - ./config:/app/config:ro
+      - rabota-artifacts:/var/lib/rabota/artifacts
+    networks:
+      - rabota-net
+    depends_on:
+      rabota-db: {condition: service_healthy}
+      rabota-redis: {condition: service_healthy}
+    ports:
+      - "8015:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  rabota-worker:
+    build:
+      context: ./server
+      target: dev
+    image: rabota-backend
+    container_name: rabota-worker
+    env_file: [.env]
+    volumes:
+      - ./server:/app
+      - ./config:/app/config:ro
+      - rabota-artifacts:/var/lib/rabota/artifacts
+    networks:
+      - rabota-net
+    depends_on:
+      rabota-db: {condition: service_healthy}
+      rabota-redis: {condition: service_healthy}
+    # Single worker process: the free LLM gateway is shared with other apps and
+    # must not be stampeded. Concurrency is capped again inside the LLM client.
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q default,ingest,score,draft,notify
+    restart: unless-stopped
+
+  rabota-scheduler:
+    build:
+      context: ./server
+      target: dev
+    image: rabota-backend
+    container_name: rabota-scheduler
+    env_file: [.env]
+    volumes:
+      - ./server:/app
+      - ./config:/app/config:ro
+    networks:
+      - rabota-net
+    depends_on:
+      rabota-db: {condition: service_healthy}
+      rabota-redis: {condition: service_healthy}
+    command: celery -A app.workers.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    restart: unless-stopped
+
+  rabota-bot:
+    build:
+      context: ./server
+      target: dev
+    image: rabota-backend
+    container_name: rabota-bot
+    env_file: [.env]
+    volumes:
+      - ./server:/app
+      - ./config:/app/config:ro
+      - rabota-artifacts:/var/lib/rabota/artifacts
+    networks:
+      - rabota-net
+    depends_on:
+      rabota-db: {condition: service_healthy}
+      rabota-api: {condition: service_started}
+    # Long polling: no public ingress, no webhook, no CSRF surface.
+    command: python -m app.bot.main
+    restart: unless-stopped
+
+  rabota-web:
+    build:
+      context: ./web
+      target: dev
+    container_name: rabota-web
+    environment:
+      VITE_API_BASE: /rabota/api
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    networks:
+      - rabota-net
+    ports:
+      - "5186:5173"
+    command: npm run dev -- --host 0.0.0.0
+    restart: unless-stopped
+
+networks:
+  rabota-net:
+    driver: bridge
+
+volumes:
+  rabota-db-data:
+  rabota-redis-data:
+  rabota-artifacts:

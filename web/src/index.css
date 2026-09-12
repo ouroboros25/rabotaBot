@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+body {
+  @apply bg-ink text-slate-200 font-sans antialiased;
+}
+
+/* Job descriptions are third-party text. They are rendered as plain text with
+   whitespace preserved, never as HTML. */
+.jd {
+  @apply whitespace-pre-wrap break-words font-mono text-[12.5px] leading-relaxed text-slate-300;
+}
+
+.card { @apply bg-panel border border-line rounded-lg; }
+.btn {
+  @apply px-3 py-1.5 rounded-md text-sm font-medium border border-line
+         bg-panel2 hover:bg-line transition-colors disabled:opacity-40
+         disabled:cursor-not-allowed;
+}
+.btn-accent { @apply bg-accent/15 border-accent/40 text-accent hover:bg-accent/25; }
+.btn-stop   { @apply bg-stop/10 border-stop/40 text-stop hover:bg-stop/20; }
+.label { @apply font-mono text-[10px] uppercase tracking-widest text-muted; }
+.chip  { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono
+                text-[10px] uppercase tracking-wider border; }
+.tnum  { font-variant-numeric: tabular-nums; }

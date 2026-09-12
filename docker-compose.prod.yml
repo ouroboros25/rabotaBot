@@ -1,0 +1,102 @@
+# Production overlay. Run with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Auth model: the app has NO internal login. Both routers sit behind
+# server-auth@file (auth-gateway ForwardAuth, Telegram 2FA). Do not remove it.
+services:
+  rabota-db:
+    ports: []
+    networks: [rabota-net]
+    restart: always
+
+  rabota-redis:
+    ports: []
+    networks: [rabota-net]
+    restart: always
+
+  rabota-api:
+    build:
+      context: ./server
+      target: prod
+    volumes: !override
+      - ./config:/app/config:ro
+      - rabota-artifacts:/var/lib/rabota/artifacts
+    networks: [rabota-net, proxy, free_llm_api_gateway-net]
+    ports: []
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && python -m app.cli seed && gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 2 --bind 0.0.0.0:8000 --access-logfile - --error-logfile -"
+    restart: always
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.rabota-api.rule=(Host(`yefrix.duckdns.org`) || Host(`yefrix.uk`)) && PathPrefix(`/rabota/api`)
+      - traefik.http.routers.rabota-api.entrypoints=websecure
+      - traefik.http.routers.rabota-api.tls.certresolver=letsencrypt
+      - traefik.http.routers.rabota-api.middlewares=rabota-api-strip,security-headers@file,server-auth@file
+      - traefik.http.routers.rabota-api.priority=30
+      - traefik.http.middlewares.rabota-api-strip.stripprefix.prefixes=/rabota/api
+      - traefik.http.services.rabota-api.loadbalancer.server.port=8000
+
+  rabota-worker:
+    build:
+      context: ./server
+      target: prod
+    volumes: !override
+      - ./config:/app/config:ro
+      - rabota-artifacts:/var/lib/rabota/artifacts
+    networks: [rabota-net, free_llm_api_gateway-net]
+    restart: always
+
+  rabota-scheduler:
+    build:
+      context: ./server
+      target: prod
+    volumes: !override
+      - ./config:/app/config:ro
+    networks: [rabota-net]
+    restart: always
+
+  rabota-bot:
+    build:
+      context: ./server
+      target: prod
+    volumes: !override
+      - ./config:/app/config:ro
+      - rabota-artifacts:/var/lib/rabota/artifacts
+    networks: [rabota-net, free_llm_api_gateway-net]
+    restart: always
+
+  rabota-web:
+    build:
+      context: ./web
+      target: prod
+    volumes: !override []
+    networks: [rabota-net, proxy]
+    ports: []
+    command: ["nginx", "-g", "daemon off;"]
+    restart: always
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      # SPA assets stay unauthenticated: script/style subrequests cannot carry
+      # the auth-gateway cookie reliably. Same split finance uses.
+      - traefik.http.routers.rabota-web-public.rule=(Host(`yefrix.duckdns.org`) || Host(`yefrix.uk`)) && (PathPrefix(`/rabota/assets`) || PathPrefix(`/rabota/vite.svg`))
+      - traefik.http.routers.rabota-web-public.entrypoints=websecure
+      - traefik.http.routers.rabota-web-public.tls.certresolver=letsencrypt
+      - traefik.http.routers.rabota-web-public.priority=30
+      - traefik.http.routers.rabota-web-public.service=rabota-web
+      - traefik.http.routers.rabota-web-public.middlewares=security-headers@file
+      - traefik.http.routers.rabota-web.rule=(Host(`yefrix.duckdns.org`) || Host(`yefrix.uk`)) && PathPrefix(`/rabota`)
+      - traefik.http.routers.rabota-web.entrypoints=websecure
+      - traefik.http.routers.rabota-web.tls.certresolver=letsencrypt
+      - traefik.http.routers.rabota-web.middlewares=security-headers@file,server-auth@file
+      - traefik.http.routers.rabota-web.priority=20
+      - traefik.http.services.rabota-web.loadbalancer.server.port=80
+
+networks:
+  proxy:
+    external: true
+  free_llm_api_gateway-net:
+    external: true
