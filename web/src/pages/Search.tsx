@@ -77,9 +77,18 @@ export default function SearchPage() {
       'и прогонит все собранные вакансии заново. Займёт минуту.',
     )) return;
     try {
-      const res = await api.rescan();
+      setNote('Перепроверяю…');
+      const res = await api.rescan((n) => setNote(`Перепроверяю… ${n}`));
       setError(null);
-      setNote(`Перепроверено вакансий: ${res.processed}. Пересчёт очереди пойдёт по расписанию.`);
+      const top = Object.entries(res.gate_counts)
+        .sort((a, b) => (b[1] as number) - (a[1] as number))
+        .slice(0, 4)
+        .map(([code, n]) => `${code} ${n}`)
+        .join(', ');
+      setNote(
+        `Перепроверено вакансий: ${res.processed}. Отсеяно: ${top || 'ничего'}. ` +
+        'Пересчёт приоритетов пойдёт по расписанию, в пределах получаса.',
+      );
     } catch (e) { setError((e as Error).message); setNote(null); }
   }
 

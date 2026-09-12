@@ -109,36 +109,56 @@ def list_jobs(
 
 
 @router.post("/rescan")
-def rescan(db: Session = Depends(get_db)) -> dict:
-    """Re-apply every hard gate to the whole collected corpus.
+def rescan(
+    reset: bool = Query(True, description="start over; pass false to continue"),
+    budget: int = Query(3000, ge=500, le=20000,
+                        description="postings to process in this request"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Re-apply every hard gate to the collected corpus, one bounded slice at a time.
 
-    Needed because gates are evaluated once per posting behind a watermark, so a
-    rule added today would otherwise only affect postings collected from now on.
-    Synchronous on purpose: it takes seconds, and a background job would make the
-    UI lie about when the new rules are actually in force.
+    Needed at all because gates are evaluated once per posting behind a
+    watermark, so a rule added today would otherwise only affect future intake.
+
+    Bounded because it is synchronous: a full pass over 5,349 postings measured
+    16.8s against gunicorn's 30s default, so a corpus twice that size would get
+    the worker killed mid-request. The caller polls with reset=false until
+    ``done`` comes back true, which scales to any corpus size and keeps the UI
+    honest about when the new rules are actually in force.
     """
     from app.services import gates
     from app.services.configload import reset_caches
     from app.services.ingest import apply_gates
 
-    # Re-read rubric.yaml first: otherwise a long-running worker re-applies the
-    # rules it compiled at startup and the rescan looks like it did nothing.
-    reset_caches()
-    gates.reset_rule_cache()
+    # Re-read rubric.yaml on the first slice: otherwise a long-running worker
+    # re-applies the rules it compiled at startup and the rescan does nothing.
+    if reset:
+        reset_caches()
+        gates.reset_rule_cache()
 
     totals: dict[str, int] = {}
-    batch = apply_gates(db, rescan=True)
-    db.commit()
-    while True:
-        for code, count in batch.items():
-            totals[code] = totals.get(code, 0) + count
-        if not batch.get("_processed"):
-            break
-        batch = apply_gates(db)
-        db.commit()
+    processed = 0
+    first = True
+    done = False
 
-    processed = totals.pop("_processed", 0)
-    return {"ok": True, "processed": processed, "gate_counts": totals}
+    while processed < budget:
+        batch = apply_gates(db, rescan=(reset and first))
+        db.commit()
+        first = False
+        count = batch.pop("_processed", 0)
+        for code, n in batch.items():
+            totals[code] = totals.get(code, 0) + n
+        if not count:
+            done = True
+            break
+        processed += count
+
+    return {
+        "ok": True,
+        "processed": processed,
+        "done": done,
+        "gate_counts": totals,
+    }
 
 
 @router.get("/facets")

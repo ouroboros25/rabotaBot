@@ -33,7 +33,25 @@ export const api = {
     return request<any>(`/jobs?${qs}`);
   },
   facets: () => request<any>('/jobs/facets'),
-  rescan: () => request<any>('/jobs/rescan', { method: 'POST' }),
+  /** Re-gate the corpus. Bounded server-side, so poll until it reports done. */
+  rescan: async (onProgress?: (processed: number) => void) => {
+    let processed = 0;
+    let reset = true;
+    const gateCounts: Record<string, number> = {};
+    for (let guard = 0; guard < 50; guard++) {
+      const res = await request<any>(
+        `/jobs/rescan?reset=${reset}`, { method: 'POST' },
+      );
+      processed += res.processed;
+      for (const [code, n] of Object.entries(res.gate_counts ?? {})) {
+        gateCounts[code] = (gateCounts[code] ?? 0) + (n as number);
+      }
+      onProgress?.(processed);
+      if (res.done) break;
+      reset = false;
+    }
+    return { processed, gate_counts: gateCounts };
+  },
   job: (id: number) => request<any>(`/jobs/${id}`),
   skipJob: (id: number, reason_code: string, note?: string) =>
     request<any>(`/jobs/${id}/skip`, {

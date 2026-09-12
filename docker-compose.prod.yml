@@ -26,7 +26,7 @@ services:
     command:
       - sh
       - -c
-      - "alembic upgrade head && python -m app.cli seed && gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 2 --bind 0.0.0.0:8000 --access-logfile - --error-logfile -"
+      - "alembic upgrade head && python -m app.cli seed && gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 2 --timeout 120 --bind 0.0.0.0:8000 --access-logfile - --error-logfile -"
     restart: always
     labels:
       - traefik.enable=true
