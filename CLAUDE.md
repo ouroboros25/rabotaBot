@@ -77,7 +77,9 @@ Schema changes: edit the models, then
 
 ## Deployment
 
-`~/apps/rabotaBot` on the mini server. See the root `README.md`. The prod
+`~/apps/rabotaBot` on the mini server, served at **https://yefrix.uk/rabota/**
+(the duckdns name resolves to the same address and the routers match both, but
+`yefrix.uk` is the canonical host). See the root `README.md`. The prod
 overlay adds Traefik labels, drops host ports, and runs migrations plus `seed`
 on start, so a new source in `sources.yaml` is live after a redeploy.
 

@@ -31,7 +31,7 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=proxy
-      - traefik.http.routers.rabota-api.rule=(Host(`yefrix.duckdns.org`) || Host(`yefrix.uk`)) && PathPrefix(`/rabota/api`)
+      - traefik.http.routers.rabota-api.rule=(Host(`yefrix.uk`) || Host(`yefrix.duckdns.org`)) && PathPrefix(`/rabota/api`)
       - traefik.http.routers.rabota-api.entrypoints=websecure
       - traefik.http.routers.rabota-api.tls.certresolver=letsencrypt
       - traefik.http.routers.rabota-api.middlewares=rabota-api-strip,security-headers@file,server-auth@file
@@ -82,13 +82,13 @@ services:
       - traefik.docker.network=proxy
       # SPA assets stay unauthenticated: script/style subrequests cannot carry
       # the auth-gateway cookie reliably. Same split finance uses.
-      - traefik.http.routers.rabota-web-public.rule=(Host(`yefrix.duckdns.org`) || Host(`yefrix.uk`)) && (PathPrefix(`/rabota/assets`) || PathPrefix(`/rabota/vite.svg`))
+      - traefik.http.routers.rabota-web-public.rule=(Host(`yefrix.uk`) || Host(`yefrix.duckdns.org`)) && (PathPrefix(`/rabota/assets`) || PathPrefix(`/rabota/vite.svg`))
       - traefik.http.routers.rabota-web-public.entrypoints=websecure
       - traefik.http.routers.rabota-web-public.tls.certresolver=letsencrypt
       - traefik.http.routers.rabota-web-public.priority=30
       - traefik.http.routers.rabota-web-public.service=rabota-web
       - traefik.http.routers.rabota-web-public.middlewares=security-headers@file
-      - traefik.http.routers.rabota-web.rule=(Host(`yefrix.duckdns.org`) || Host(`yefrix.uk`)) && PathPrefix(`/rabota`)
+      - traefik.http.routers.rabota-web.rule=(Host(`yefrix.uk`) || Host(`yefrix.duckdns.org`)) && PathPrefix(`/rabota`)
       - traefik.http.routers.rabota-web.entrypoints=websecure
       - traefik.http.routers.rabota-web.tls.certresolver=letsencrypt
       - traefik.http.routers.rabota-web.middlewares=security-headers@file,server-auth@file

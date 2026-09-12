@@ -55,8 +55,11 @@ class Settings(BaseSettings):
     JUDGE_TOP_K: int = 40
     DRAFT_MIN_PRIORITY: int = 520
 
+    # Identified User-Agent with a reachable contact URL: the point of it is that
+    # a publisher whose feed we poll can find out who we are, so it must carry
+    # the canonical host rather than an alias.
     HTTP_USER_AGENT: str = (
-        "rabotaBot/1.0 (+https://yefrix.duckdns.org/rabota; personal job search)"
+        "rabotaBot/1.0 (+https://yefrix.uk/rabota; personal job search)"
     )
     HTTP_TIMEOUT_S: float = 25.0
     RESPECT_ROBOTS: bool = True
