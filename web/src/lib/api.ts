@@ -25,6 +25,29 @@ export const api = {
   dashboard: () => request<any>('/dashboard'),
   activity: () => request<any[]>('/dashboard/activity'),
 
+  /**
+   * Re-apply the saved filters to everything already collected.
+   *
+   * Two halves, gating then scoring, both bounded server-side, so this polls
+   * until the server reports done. The callback reports which half is running.
+   */
+  reapply: async (onProgress?: (phase: string, processed: number) => void) => {
+    let processed = 0;
+    let reset = true;
+    const counts: Record<string, number> = {};
+    for (let guard = 0; guard < 80; guard++) {
+      const res = await request<any>(`/jobs/reapply?reset=${reset}`, { method: 'POST' });
+      processed += res.processed;
+      for (const [code, n] of Object.entries(res.counts ?? {})) {
+        counts[code] = (counts[code] ?? 0) + (n as number);
+      }
+      onProgress?.(res.phase, processed);
+      if (res.done) break;
+      reset = false;
+    }
+    return { processed, counts };
+  },
+
   jobs: (params: Record<string, string | number | boolean> = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
@@ -33,25 +56,6 @@ export const api = {
     return request<any>(`/jobs?${qs}`);
   },
   facets: () => request<any>('/jobs/facets'),
-  /** Re-gate the corpus. Bounded server-side, so poll until it reports done. */
-  rescan: async (onProgress?: (processed: number) => void) => {
-    let processed = 0;
-    let reset = true;
-    const gateCounts: Record<string, number> = {};
-    for (let guard = 0; guard < 50; guard++) {
-      const res = await request<any>(
-        `/jobs/rescan?reset=${reset}`, { method: 'POST' },
-      );
-      processed += res.processed;
-      for (const [code, n] of Object.entries(res.gate_counts ?? {})) {
-        gateCounts[code] = (gateCounts[code] ?? 0) + (n as number);
-      }
-      onProgress?.(processed);
-      if (res.done) break;
-      reset = false;
-    }
-    return { processed, gate_counts: gateCounts };
-  },
   job: (id: number) => request<any>(`/jobs/${id}`),
   skipJob: (id: number, reason_code: string, note?: string) =>
     request<any>(`/jobs/${id}/skip`, {

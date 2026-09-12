@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useAsync } from '@/lib/useAsync';
-import { Chip, Empty, ErrorNote, Panel } from '@/components/ui';
+import { Empty, ErrorNote, Panel } from '@/components/ui';
 import { TagInput } from '@/components/TagInput';
-import { TRACK_LABEL } from '@/lib/format';
 
 /** Starting points, not defaults: nothing is applied until the user adds it. */
 const SUGGEST = {
@@ -19,21 +19,28 @@ const SUGGEST = {
 
 export default function SearchPage() {
   const filters = useAsync(() => api.searchFilters(), []);
-  const profile = useAsync(() => api.profile(), []);
   const [form, setForm] = useState<any>(null);
-  const [variants, setVariants] = useState<any[]>([]);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
 
   useEffect(() => { if (filters.data) setForm({ ...filters.data }); }, [filters.data]);
-  useEffect(() => { if (profile.data) setVariants(profile.data.variants.map((v: any) => ({ ...v }))); },
-    [profile.data]);
 
   if (!form) return <Empty>загрузка…</Empty>;
 
   const set = (k: string, v: any) => setForm((f: any) => ({ ...f, [k]: v }));
 
-  async function saveFilters() {
+  /**
+   * Save and apply in one action.
+   *
+   * Saving alone only changes what happens to postings collected from now on:
+   * gates run once per posting and scores are cached. Splitting this into two
+   * buttons produced exactly the confusion it deserved — tags changed, results
+   * did not.
+   */
+  async function saveAndApply() {
+    setApplying(true);
+    setError(null);
     try {
       const saved = await api.saveSearchFilters({
         require_any: form.require_any,
@@ -46,54 +53,35 @@ export default function SearchPage() {
         min_priority: Number(form.min_priority) || 0,
       });
       setForm({ ...form, ...saved });
-      setError(null);
-      setNote(
-        'Сохранено. Фильтры применяются на этапе жёсткого отсева, но к уже ' +
-        'проверенным вакансиям задним числом не применяются: нажмите ' +
-        '«Перепроверить всё», если хотите пересчитать корпус.',
+
+      setNote('Сохранено. Пересобираю очередь по новым тегам…');
+      const res = await api.reapply((phase, processed) =>
+        setNote(
+          phase === 'gates'
+            ? `Отбираю по фильтрам… ${processed}`
+            : `Пересчитываю приоритеты… ${processed}`,
+        ),
       );
-    } catch (e) { setError((e as Error).message); setNote(null); }
-  }
 
-  async function saveVariant(v: any) {
-    try {
-      await api.saveVariant(v.id, {
-        track: v.track,
-        headline: v.headline,
-        target_titles: v.target_titles,
-        must_have_skills: v.must_have_skills,
-        nice_to_have_skills: v.nice_to_have_skills,
-        exclude_skills: v.exclude_skills,
-        enabled: v.enabled,
-      });
-      setError(null);
-      setNote(`Трек «${TRACK_LABEL[v.track] ?? v.track}» сохранён.`);
-    } catch (e) { setError((e as Error).message); setNote(null); }
-  }
-
-  async function rescan() {
-    if (!window.confirm(
-      'Перепроверить весь корпус по новым правилам? Это сбросит отметки фильтров ' +
-      'и прогонит все собранные вакансии заново. Займёт минуту.',
-    )) return;
-    try {
-      setNote('Перепроверяю…');
-      const res = await api.rescan((n) => setNote(`Перепроверяю… ${n}`));
-      setError(null);
-      const top = Object.entries(res.gate_counts)
+      const dropped = Object.entries(res.counts)
+        .filter(([code]) => code !== 'scored')
         .sort((a, b) => (b[1] as number) - (a[1] as number))
         .slice(0, 4)
         .map(([code, n]) => `${code} ${n}`)
         .join(', ');
-      setNote(
-        `Перепроверено вакансий: ${res.processed}. Отсеяно: ${top || 'ничего'}. ` +
-        'Пересчёт приоритетов пойдёт по расписанию, в пределах получаса.',
-      );
-    } catch (e) { setError((e as Error).message); setNote(null); }
-  }
 
-  const patchVariant = (id: number, key: string, value: any) =>
-    setVariants((list) => list.map((v) => (v.id === id ? { ...v, [key]: value } : v)));
+      setNote(
+        `Готово. Отсеяно: ${dropped || '—'}. ` +
+        `Пересчитано вакансий: ${res.counts.scored ?? 0}. ` +
+        'Очередь уже обновлена.',
+      );
+    } catch (e) {
+      setError((e as Error).message);
+      setNote(null);
+    } finally {
+      setApplying(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -103,20 +91,20 @@ export default function SearchPage() {
       )}
 
       <Panel
-        title="Ключевые слова"
-        right={<span className="label">применяются до скоринга, бесплатно</span>}
+        title="По каким словам искать"
+        right={<Link to="/queue" className="label hover:text-accent">в очередь →</Link>}
       >
-        <p className="text-sm text-muted mb-4">
-          Эти правила срабатывают на этапе жёсткого отсева, то есть отклонённая
-          вакансия не тратит ни эмбеддинга, ни вызова модели. Регистр не важен.
-          Совпадение идёт по границе слова, поэтому <code>go</code> не поймает
-          «good», а <code>.net</code> и <code>c#</code> работают как есть.
+        <p className="text-sm text-muted mb-5">
+          Эти теги определяют и что попадает в очередь, и как оно ранжируется.
+          Регистр не важен. Совпадение идёт по границе слова, поэтому{' '}
+          <code>go</code> не поймает «good», а <code>.net</code>, <code>c#</code>{' '}
+          и <code>ci/cd</code> работают как написаны.
         </p>
 
         <div className="flex flex-col gap-5">
           <Field
             label="Обязательно хотя бы одно"
-            hint="Вакансия отбрасывается, если не встретилось ни одного из этих слов. Пусто = требования нет."
+            hint="Главный переключатель. Вакансия отбрасывается, если не встретилось ни одного из этих слов, а совпавшие поднимаются в выдаче. Пусто — требования нет, показывается всё подряд."
           >
             <TagInput
               value={form.require_any} tone="accent"
@@ -152,7 +140,7 @@ export default function SearchPage() {
 
           <Field
             label="Поднимать в выдаче"
-            hint={`Не фильтр, а надбавка: +${(form.boost_per_term ?? 0.06).toFixed(2)} за слово, но не больше +${(form.boost_cap ?? 0.24).toFixed(2)} суммарно, чтобы длинный список не перебил реальное совпадение.`}
+            hint="Не отсеивает, а повышает приоритет: полезно для технологий, которые вам интересны, но не обязательны."
           >
             <TagInput
               value={form.boost} tone="accent"
@@ -183,7 +171,7 @@ export default function SearchPage() {
           </Field>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Максимальный возраст, дней" hint="0 — без ограничения.">
+            <Field label="Максимальный возраст вакансии, дней" hint="0 — без ограничения.">
               <input
                 type="number" min={0} max={365}
                 className="bg-panel2 border border-line rounded-md px-2 py-1.5 text-sm w-full"
@@ -192,8 +180,8 @@ export default function SearchPage() {
               />
             </Field>
             <Field
-              label="Минимальный приоритет в дайджесте"
-              hint="Ниже этого значения вакансии не показываются и не уходят в Telegram."
+              label="Минимальный приоритет"
+              hint="Ниже этого значения вакансии не показываются и не уходят в Telegram. 0 — показывать всё."
             >
               <input
                 type="number" min={0} max={1000}
@@ -205,82 +193,13 @@ export default function SearchPage() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 mt-5">
-          <button className="btn btn-accent" onClick={saveFilters}>Сохранить фильтры</button>
-          <button className="btn" onClick={rescan}>Перепроверить весь корпус</button>
+        <div className="flex flex-wrap items-center gap-3 mt-6">
+          <button className="btn btn-accent" onClick={saveAndApply} disabled={applying}>
+            {applying ? 'Применяю…' : 'Сохранить и применить'}
+          </button>
           <span className="label">
-            новые правила действуют на всё, что придёт дальше; для уже собранного нужна перепроверка
+            пересобирает уже собранные вакансии под новые теги, занимает до минуты
           </span>
-        </div>
-      </Panel>
-
-      <Panel title="Технологии и должности по трекам">
-        <p className="text-sm text-muted mb-4">
-          Это ядро совпадения: обязательные навыки дают основной вес в покрытии,
-          желательные считаются с коэффициентом, а исключённые отбрасывают
-          вакансию целиком. Должности сравниваются нечётко, поэтому «Senior
-          Backend Engineer» поймает и «Sr. Back-end Developer».
-        </p>
-        <div className="flex flex-col gap-4">
-          {variants.map((v) => (
-            <div key={v.id} className="bg-panel2 rounded-md p-4 flex flex-col gap-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <Chip tone="accent">{TRACK_LABEL[v.track] ?? v.track}</Chip>
-                <input
-                  className="flex-1 min-w-[16rem] bg-panel border border-line rounded-md px-2 py-1.5 text-sm"
-                  value={v.headline}
-                  onChange={(e) => patchVariant(v.id, 'headline', e.target.value)}
-                  placeholder="как вы себя позиционируете на этом треке"
-                />
-                <label className="flex items-center gap-1.5 text-sm text-muted">
-                  <input
-                    type="checkbox" checked={v.enabled}
-                    onChange={(e) => patchVariant(v.id, 'enabled', e.target.checked)}
-                  />
-                  включён
-                </label>
-              </div>
-
-              <Field label="Целевые должности">
-                <TagInput
-                  value={v.target_titles}
-                  onChange={(x) => patchVariant(v.id, 'target_titles', x)}
-                  placeholder="senior software engineer…"
-                />
-              </Field>
-              <div className="grid gap-4 md:grid-cols-3">
-                <Field label="Обязательные навыки">
-                  <TagInput
-                    value={v.must_have_skills} tone="accent"
-                    onChange={(x) => patchVariant(v.id, 'must_have_skills', x)}
-                    placeholder="dotnet, azure…"
-                    suggestions={SUGGEST.stack}
-                  />
-                </Field>
-                <Field label="Желательные">
-                  <TagInput
-                    value={v.nice_to_have_skills}
-                    onChange={(x) => patchVariant(v.id, 'nice_to_have_skills', x)}
-                    placeholder="react, terraform…"
-                    suggestions={SUGGEST.stack}
-                  />
-                </Field>
-                <Field label="Исключающие">
-                  <TagInput
-                    value={v.exclude_skills} tone="stop"
-                    onChange={(x) => patchVariant(v.id, 'exclude_skills', x)}
-                    placeholder="php, wordpress…"
-                    suggestions={SUGGEST.exclude}
-                  />
-                </Field>
-              </div>
-              <div>
-                <button className="btn btn-accent" onClick={() => saveVariant(v)}>
-                  Сохранить трек
-                </button>
-              </div>
-            </div>
-          ))}
         </div>
       </Panel>
     </div>

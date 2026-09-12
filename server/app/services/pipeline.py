@@ -50,6 +50,26 @@ def scorable_clusters(db: Session, limit: int) -> list[JobCluster]:
     ).scalars().all()
 
 
+def _all_postings_gated(db: Session, cluster_id: int) -> bool:
+    """True when every posting in the cluster carries a hard-gate flag.
+
+    Checked at scoring time as well as at gating time because a cluster can gain
+    a sibling posting between the two, and a cluster whose every copy is gated
+    must not be scored back into the queue.
+    """
+    posting_ids = db.execute(
+        select(JobPosting.id).where(JobPosting.cluster_id == cluster_id)
+    ).scalars().all()
+    if not posting_ids:
+        return True
+    gated = db.execute(
+        select(EligibilityFlag.job_posting_id)
+        .where(EligibilityFlag.job_posting_id.in_(posting_ids))
+        .distinct()
+    ).scalars().all()
+    return set(posting_ids) <= set(gated)
+
+
 def score_batch(db: Session, limit: int = 600) -> dict[str, int]:
     profile = db.execute(select(Profile).limit(1)).scalar_one_or_none()
     if profile is None:
@@ -97,6 +117,9 @@ def score_batch(db: Session, limit: int = 600) -> dict[str, int]:
     for cluster in clusters:
         posting = postings.get(cluster.id)
         if posting is None or posting.source_id in excluded_source_ids:
+            continue
+        if _all_postings_gated(db, cluster.id):
+            cluster.status = "gated"
             continue
         track = _pick_track(cluster, variants)
         variant = variants.get(track)

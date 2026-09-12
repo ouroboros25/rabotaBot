@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -108,36 +108,57 @@ def list_jobs(
     return {"items": items, "count": len(items), "total": total, "offset": offset}
 
 
-@router.post("/rescan")
-def rescan(
+@router.post("/reapply")
+def reapply(
     reset: bool = Query(True, description="start over; pass false to continue"),
-    budget: int = Query(3000, ge=500, le=20000,
-                        description="postings to process in this request"),
+    budget: int = Query(2500, ge=200, le=20000,
+                        description="items to process in this request"),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Re-apply every hard gate to the collected corpus, one bounded slice at a time.
+    """Re-apply the current filters to everything already collected.
 
-    Needed at all because gates are evaluated once per posting behind a
-    watermark, so a rule added today would otherwise only affect future intake.
+    Saving a filter only changes what happens to postings collected FROM NOW ON:
+    gates run once per posting behind a watermark, and scores are cached. Without
+    this, a user edits their tags, sees the same ranking, and concludes the tags
+    were ignored. So "apply" means both halves: re-gate the corpus, then rescore
+    it, because tags feed the ranking as well as the filtering.
 
-    Bounded because it is synchronous: a full pass over 5,349 postings measured
-    16.8s against gunicorn's 30s default, so a corpus twice that size would get
-    the worker killed mid-request. The caller polls with reset=false until
-    ``done`` comes back true, which scales to any corpus size and keeps the UI
-    honest about when the new rules are actually in force.
+    Bounded per request and driven by a client poll: a full pass measured ~17s
+    for gating alone on 5,349 postings, which is close enough to a request
+    timeout that doing it in one call is a latent outage.
+
+    Returns ``phase`` so the UI can say which half is running.
     """
-    from app.services import gates
+    from sqlalchemy import delete as sql_delete
+
+    from app.services import gates, pipeline
     from app.services.configload import reset_caches
     from app.services.ingest import apply_gates
 
-    # Re-read rubric.yaml on the first slice: otherwise a long-running worker
-    # re-applies the rules it compiled at startup and the rescan does nothing.
     if reset:
+        # Re-read rubric.yaml: a long-running worker otherwise re-applies the
+        # rules it compiled at startup.
         reset_caches()
         gates.reset_rule_cache()
 
+        # Drop cached scores so the new tags actually change the ORDER.
+        # A plain DELETE, never TRUNCATE CASCADE: draft.score_id is ON DELETE
+        # SET NULL, so this keeps drafts and applications; a cascading truncate
+        # would delete them.
+        db.execute(sql_delete(Score))
+        # Clusters the old filters killed get another chance. 'archived' is left
+        # alone on purpose: that is where a human skip lands, and resurrecting a
+        # job the user explicitly rejected would be the worst kind of surprise.
+        db.execute(
+            update(JobCluster)
+            .where(JobCluster.status.in_(("gated", "scored", "queued")))
+            .values(status="new")
+        )
+        db.commit()
+
     totals: dict[str, int] = {}
     processed = 0
+    phase = "gates"
     first = True
     done = False
 
@@ -149,19 +170,32 @@ def rescan(
         for code, n in batch.items():
             totals[code] = totals.get(code, 0) + n
         if not count:
-            done = True
             break
         processed += count
 
+    # Gating is exhausted for this pass; spend whatever budget is left scoring.
+    if processed < budget:
+        phase = "score"
+        while processed < budget:
+            result = pipeline.score_batch(db, limit=600)
+            db.commit()
+            scored = result.get("scored", 0)
+            if not scored:
+                done = True
+                break
+            processed += scored
+            totals["scored"] = totals.get("scored", 0) + scored
+
     return {
         "ok": True,
+        "phase": phase,
         "processed": processed,
         "done": done,
-        "gate_counts": totals,
+        "counts": totals,
     }
 
 
-@router.get("/facets")
+@router.get("/facets")@router.get("/facets")
 def facets(db: Session = Depends(get_db)) -> dict:
     """What is actually in the queue right now, for populating filter controls."""
     rows = db.execute(

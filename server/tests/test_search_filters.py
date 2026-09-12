@@ -167,3 +167,52 @@ def test_no_filters_object_changes_nothing():
     posting = _posting(body_text="WordPress everywhere", title="Manager")
     assert codes(gates.evaluate(posting, _profile(), None, None)) == \
            codes(gates.evaluate(posting, _profile(), None, SearchFilters()))
+
+
+def test_search_tags_feed_the_ranking_not_only_the_filter():
+    """The behaviour the user actually expects from "search by these tags".
+
+    Without this, editing tags shrinks the corpus but leaves the ORDER driven by
+    whatever skills were configured months ago, which reads as "it ignored me".
+    """
+    from app.services.scoring import skill_coverage
+
+    variant = SimpleNamespace(
+        must_have_skills=["dotnet"], nice_to_have_skills=[], exclude_skills=[],
+        target_titles=[], headline="",
+    )
+    posting_text = "We are building a Django platform in Python."
+
+    without_tags, _ = skill_coverage(posting_text, variant)
+    with_tags, matched = skill_coverage(
+        posting_text, variant, SearchFilters(require_any=["python", "django"]),
+    )
+    assert with_tags > without_tags
+    assert "python" in matched and "django" in matched
+
+
+def test_boost_tags_count_as_nice_to_have_in_coverage():
+    from app.services.scoring import skill_coverage
+
+    variant = SimpleNamespace(
+        must_have_skills=["dotnet"], nice_to_have_skills=[], exclude_skills=[],
+        target_titles=[], headline="",
+    )
+    _, matched = skill_coverage(
+        "Deploys with Bicep on Azure.", variant, SearchFilters(boost=["bicep"]),
+    )
+    assert "bicep" in matched
+
+
+def test_a_tag_already_in_the_profile_is_not_counted_twice():
+    from app.services.scoring import skill_coverage
+
+    variant = SimpleNamespace(
+        must_have_skills=["azure"], nice_to_have_skills=[], exclude_skills=[],
+        target_titles=[], headline="",
+    )
+    score, matched = skill_coverage(
+        "Runs on Azure.", variant, SearchFilters(require_any=["azure"]),
+    )
+    assert matched.count("azure") == 1
+    assert score <= 1.0

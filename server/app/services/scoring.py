@@ -63,14 +63,24 @@ def freshness(published: datetime | None, now: datetime | None = None) -> float:
     return math.exp(-age_hours / 168.0)
 
 
-def skill_coverage(text: str, variant: ProfileVariant) -> tuple[float, list[str]]:
-    """Share of the variant's must-have skills the posting actually asks for.
+def skill_coverage(
+    text: str, variant: ProfileVariant, filters=None,
+) -> tuple[float, list[str]]:
+    """Share of the wanted skills the posting actually asks for.
 
     Extracted by dictionary match rather than by an LLM: deterministic, free and
     auditable, and the user can see exactly which term fired.
+
+    The user's own search tags count here too. Without that, editing the tags on
+    the Search page shrinks the corpus but leaves the ORDER driven by whatever
+    skills were configured months ago, which reads as "it ignored my tags".
+    Required tags carry must-have weight, boost tags carry nice-to-have weight.
     """
     must = [str(s).lower() for s in (variant.must_have_skills or [])]
     nice = [str(s).lower() for s in (variant.nice_to_have_skills or [])]
+    if filters is not None:
+        must += [t for t in (filters.require_any or []) if t not in must]
+        nice += [t for t in (filters.boost or []) if t not in nice and t not in must]
     if not must and not nice:
         return 0.5, []
     haystack = text.lower()
@@ -175,15 +185,23 @@ def compute_fast(
 ) -> FastScore:
     w = load_rubric().get("weights", {})
     text = f"{posting.title or ''}\n{posting.body_text or ''}"
+    # Search tags are repeated so they weigh as much as configured must-haves:
+    # a tag the user typed today is a stronger statement of intent than a skill
+    # list they filled in once.
+    tag_terms: list[str] = []
+    if filters is not None:
+        tag_terms = [*(filters.require_any or []), *(filters.boost or [])]
+
     profile_text = " ".join(
         [variant.headline or ""]
         + [str(t) for t in (variant.target_titles or [])]
         + [str(s) for s in (variant.must_have_skills or [])] * 3
         + [str(s) for s in (variant.nice_to_have_skills or [])]
+        + tag_terms * 3
     )
 
     sem = _rescale_semantic(semantic_similarity(text, profile_text, idf))
-    cov, matched = skill_coverage(text, variant)
+    cov, matched = skill_coverage(text, variant, filters)
     tfit = title_fit(posting.title or "", variant)
     fresh = freshness(posting.first_published_at)
     cfit = comp_fit(posting, profile)
