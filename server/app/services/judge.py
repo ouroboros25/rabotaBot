@@ -167,12 +167,32 @@ def _validate_evidence(result: dict[str, Any], body: str) -> dict[str, Any]:
     """
     haystack = " ".join(body.lower().split())
     kept, dropped = [], 0
-    for item in result.get("evidence") or []:
-        quote = " ".join(str(item.get("quote", "")).lower().split())
-        if len(quote) >= 12 and quote[:120] in haystack:
-            kept.append(item)
+
+    raw_evidence = result.get("evidence")
+    if not isinstance(raw_evidence, list):
+        raw_evidence = []
+
+    for item in raw_evidence:
+        # The schema asks for {claim, quote}, but a free model will sometimes
+        # return a bare string, or a dict with the keys renamed. Anything that
+        # cannot be read as a quote is simply dropped: the whole point of this
+        # function is that unverifiable evidence does not count.
+        if isinstance(item, dict):
+            quote_raw = item.get("quote") or item.get("text") or item.get("evidence") or ""
+            claim = item.get("claim") or item.get("reason") or ""
+            normalised = {"claim": str(claim), "quote": str(quote_raw)}
+        elif isinstance(item, str):
+            normalised = {"claim": "", "quote": item}
         else:
             dropped += 1
+            continue
+
+        quote = " ".join(normalised["quote"].lower().split())
+        if len(quote) >= 12 and quote[:120] in haystack:
+            kept.append(normalised)
+        else:
+            dropped += 1
+
     result["evidence"] = kept
     result["evidence_dropped"] = dropped
     if dropped and not kept:
