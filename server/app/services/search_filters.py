@@ -67,7 +67,7 @@ def load(db: Session) -> SearchFilters:
     row = db.get(Setting, SETTING_KEY)
     if row is None or not isinstance(row.value, dict):
         return SearchFilters()
-    data = row.value
+    data = {k: v for k, v in row.value.items() if k != "_previous"}
     return SearchFilters(
         require_any=_clean_terms(data.get("require_any")),
         exclude=_clean_terms(data.get("exclude")),
@@ -99,14 +99,33 @@ def normalize(filters: SearchFilters) -> SearchFilters:
 
 
 def save(db: Session, filters: SearchFilters) -> SearchFilters:
+    """Store the filters, keeping the value they replaced.
+
+    The previous value is kept in the same row under ``_previous``. It costs
+    nothing and makes an accidental overwrite recoverable, which is not
+    hypothetical: a filter set typed by hand was overwritten during testing and
+    there was no way to get it back.
+    """
     cleaned = normalize(filters)
+    payload = cleaned.as_dict()
     row = db.get(Setting, SETTING_KEY)
     if row is None:
-        db.add(Setting(key=SETTING_KEY, value=cleaned.as_dict()))
+        db.add(Setting(key=SETTING_KEY, value=payload))
     else:
-        row.value = cleaned.as_dict()
+        previous = {k: v for k, v in (row.value or {}).items() if k != "_previous"}
+        if previous and previous != payload:
+            payload["_previous"] = previous
+        row.value = payload
     db.flush()
     return cleaned
+
+
+def previous(db: Session) -> dict | None:
+    """The filter set that the current one replaced, if any."""
+    row = db.get(Setting, SETTING_KEY)
+    if row is None or not isinstance(row.value, dict):
+        return None
+    return row.value.get("_previous")
 
 
 # --------------------------------------------------------------------------

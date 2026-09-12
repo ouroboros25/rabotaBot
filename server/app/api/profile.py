@@ -142,6 +142,9 @@ def get_search_filters(db: Session = Depends(get_db)) -> dict:
     ]
     return {
         **filters.as_dict(),
+        # Surfaced so an accidental overwrite is visibly recoverable rather than
+        # silently gone.
+        "previous": search_filters.previous(db),
         "available_sources": known_sources,
         "boost_per_term": search_filters.BOOST_PER_TERM,
         "boost_cap": search_filters.BOOST_CAP,
@@ -159,6 +162,26 @@ def put_search_filters(body: SearchFiltersBody, db: Session = Depends(get_db)) -
     # Returns the CLEANED values, so the UI shows exactly what the gates will
     # apply rather than what was typed.
     return saved.as_dict()
+
+
+@router.post("/search-filters/undo")
+def undo_search_filters(db: Session = Depends(get_db)) -> dict:
+    """Restore the filter set that the last save replaced."""
+    prev = search_filters.previous(db)
+    if not prev:
+        raise HTTPException(404, "no previous filter set stored")
+    restored = search_filters.save(db, search_filters.SearchFilters(
+        require_any=prev.get("require_any") or [],
+        exclude=prev.get("exclude") or [],
+        exclude_title=prev.get("exclude_title") or [],
+        boost=prev.get("boost") or [],
+        exclude_companies=prev.get("exclude_companies") or [],
+        exclude_sources=prev.get("exclude_sources") or [],
+        max_age_days=int(prev.get("max_age_days") or 0),
+        min_priority=float(prev.get("min_priority") or 0.0),
+    ))
+    db.commit()
+    return restored.as_dict()
 
 
 @router.put("/variants/{variant_id}")

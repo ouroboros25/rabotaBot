@@ -216,3 +216,69 @@ def test_a_tag_already_in_the_profile_is_not_counted_twice():
     )
     assert matched.count("azure") == 1
     assert score <= 1.0
+
+
+# ---------------------------------------------------------------- history
+
+class _FakeSetting:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeDB:
+    """Enough of a Session for the settings round-trip."""
+
+    def __init__(self, row=None):
+        self.row = row
+        self.added = []
+
+    def get(self, model, key):
+        return self.row
+
+    def add(self, obj):
+        self.added.append(obj)
+        self.row = obj
+
+    def flush(self):
+        pass
+
+
+def test_save_keeps_the_value_it_replaced():
+    """Motivated by a real loss: a hand-typed filter set was overwritten during
+    testing and there was no way to recover it."""
+    from app.services import search_filters as sf
+
+    db = _FakeDB(_FakeSetting({"require_any": ["dotnet"], "exclude": [],
+                               "exclude_title": [], "boost": [],
+                               "exclude_companies": [], "exclude_sources": [],
+                               "max_age_days": 0, "min_priority": 0.0}))
+    sf.save(db, SearchFilters(require_any=["python"]))
+
+    assert db.row.value["require_any"] == ["python"]
+    assert db.row.value["_previous"]["require_any"] == ["dotnet"]
+    assert sf.previous(db)["require_any"] == ["dotnet"]
+
+
+def test_load_ignores_the_history_key():
+    from app.services import search_filters as sf
+
+    db = _FakeDB(_FakeSetting({
+        "require_any": ["python"], "exclude": [], "exclude_title": [], "boost": [],
+        "exclude_companies": [], "exclude_sources": [], "max_age_days": 0,
+        "min_priority": 0.0,
+        "_previous": {"require_any": ["dotnet"]},
+    }))
+    loaded = sf.load(db)
+    assert loaded.require_any == ["python"]
+    assert not hasattr(loaded, "_previous")
+
+
+def test_saving_the_same_value_does_not_shift_history():
+    from app.services import search_filters as sf
+
+    db = _FakeDB(_FakeSetting({"require_any": ["dotnet"], "exclude": [],
+                               "exclude_title": [], "boost": [],
+                               "exclude_companies": [], "exclude_sources": [],
+                               "max_age_days": 0, "min_priority": 0.0}))
+    sf.save(db, SearchFilters(require_any=["dotnet"]))
+    assert "_previous" not in db.row.value, "an unchanged save must not lose history"
