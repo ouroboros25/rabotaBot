@@ -72,6 +72,42 @@ _NAME_TO_ISO: dict[str, str] = {
 
 _CLEAN = re.compile(r"[^a-z\s.]")
 
+# Regional shorthands that boards append to a title. NORAM/AMER/LATAM/APAC are
+# fences; EMEA and EU are not, for a candidate in Poland or Ukraine. That is
+# exactly why this resolves through REGIONS instead of blanket-matching a word.
+_TITLE_REGION = re.compile(
+    r"\b(amer|americas|noram|nam|latam|apac|anz|japac|emea|eu|europe|cee|uk|"
+    r"us|usa|united states|canada|can|india|australia|singapore|japan|brazil|"
+    r"mexico|germany|france|poland|ukraine|netherlands|spain|ireland)\b",
+    re.IGNORECASE,
+)
+
+# Extra shorthands that only appear in titles, not in prose.
+_TITLE_ALIASES = {
+    "amer": "americas", "noram": "north america", "nam": "north america",
+    "can": "canada", "anz": "apac", "japac": "apac",
+}
+
+
+def infer_from_title(title: str | None) -> list[str] | None:
+    """Resolve region and country tokens in a job title to ISO-2 codes.
+
+    Boards routinely encode eligibility in the title alone ("Senior SRE - AMER",
+    "Staff Engineer, Data Platform - CAN") and leave the structured location
+    field empty, so a title-blind gate lets exactly those through to the top of
+    the ranking. Returns None when the title says nothing about geography.
+    """
+    if not title:
+        return None
+    codes: set[str] = set()
+    for match in _TITLE_REGION.finditer(title):
+        token = match.group(1).lower()
+        token = _TITLE_ALIASES.get(token, token)
+        resolved = normalize_one(token)
+        if resolved:
+            codes |= resolved
+    return sorted(codes) or None
+
 
 def normalize_one(value: str | None) -> set[str] | None:
     """Return ISO-2 codes, an empty set for "worldwide", or None if unparseable.

@@ -95,6 +95,15 @@ def evaluate(posting: JobPosting, profile: Profile, variant=None) -> list[GateHi
             "GEO_FENCED", "countries_allowed",
             ", ".join(posting.countries_allowed or [])[:200],
         ))
+    elif verdict is None:
+        # No structured field: boards very often encode the fence in the title
+        # alone ("Senior SRE - AMER"), and a title-blind gate sends exactly those
+        # to the top of the ranking.
+        inferred = geo.infer_from_title(posting.title)
+        if geo.eligible(inferred, profile.countries_eligible) is False:
+            hits.append(GateHit(
+                "GEO_FENCED", "title_region", f"{posting.title} -> {', '.join(inferred or [])}"[:200],
+            ))
 
     if posting.remote_policy in ("hybrid", "onsite"):
         hits.append(GateHit("HYBRID_ONSITE", "remote_policy", posting.remote_policy))

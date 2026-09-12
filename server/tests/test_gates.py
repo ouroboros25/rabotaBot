@@ -94,3 +94,28 @@ def test_hourly_rate_is_annualised_before_comparison():
         _posting(comp_max=80, comp_period="hour"), _profile()))
     assert "COMP_FLOOR" in codes(gates.evaluate(
         _posting(comp_max=20, comp_period="hour"), _profile()))
+
+
+def test_region_suffix_in_title_is_gated():
+    hits = gates.evaluate(
+        _posting(title="Site Reliability Engineer, Infrastructure Platforms - AMER"),
+        _profile(),
+    )
+    assert "GEO_FENCED" in codes(hits)
+
+
+def test_emea_suffix_is_not_gated_for_a_polish_candidate():
+    hits = gates.evaluate(
+        _posting(title="Senior Backend Engineer - EMEA"), _profile()
+    )
+    assert "GEO_FENCED" not in codes(hits)
+
+
+def test_structured_field_still_wins_over_the_title():
+    """An explicit allow-list beats a title token: a title saying "US" while the
+    feed says the role is open to Poland should not be gated."""
+    hits = gates.evaluate(
+        _posting(title="Backend Engineer (US)", countries_allowed=["PL", "US"]),
+        _profile(),
+    )
+    assert "GEO_FENCED" not in codes(hits)
