@@ -106,17 +106,28 @@ gates:
       - "(talent|candidate|hiring) pipeline"
       - "expression of interest"
       - "open application"
-  # Body: only phrases that cannot mean anything else. Deliberately excludes
-  # bare "evergreen" and bare "pipeline": most engineering descriptions mention
-  # a CI/CD or data pipeline, and gating on that would hide the best roles.
+  # Body: only phrases that describe THE APPLICATION ITSELF, and only in the
+  # opening of the description (see evergreen_body_chars).
+  #
+  # Everything softer was tried against real data and produced false positives:
+  # "talent pool" gated a batch of genuine Airbnb roles because it appears in
+  # their standard EEO paragraph ("committed to working with the broadest
+  # possible talent pool"), and "join our talent community for future
+  # opportunities" is ATS footer boilerplate on plenty of real openings.
+  # A pipeline requisition says what it is at the top; boilerplate sits at the
+  # bottom. That position difference is the only reliable separator.
   evergreen_body:
     patterns:
-      - "talent (pool|community|network)"
-      - "future opportunities"
-      - "general application"
+      - "this is a general application"
+      - "general application for future"
       - "speculative application"
       - "expression of interest"
-      - "(talent|candidate|hiring) pipeline"
+      - "not a specific (job|role|opening|vacancy)"
+      - "no specific (opening|vacancy) at this time"
+      - "we are not currently hiring for this"
+  # Only the first N characters of a description are searched for the body
+  # patterns above.
+  evergreen_body_chars: 1200
 
   stale_after_days: 45
   # If nothing has come back in 10 days it is functionally a rejection: the median

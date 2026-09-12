@@ -57,12 +57,38 @@ def test_clearance_and_hybrid_and_w2():
         _posting(body_text="W2 only, no C2C"), _profile()))
 
 
-def test_evergreen_talent_pool_is_gated():
+def test_evergreen_label_in_the_title_is_gated():
     assert "EVERGREEN" in codes(gates.evaluate(
         _posting(title="Software Engineer (All Levels)"), _profile()))
     assert "EVERGREEN" in codes(gates.evaluate(
-        _posting(body_text="Join our talent community for future opportunities"),
-        _profile()))
+        _posting(title="Backend Engineer - Talent Pool"), _profile()))
+
+
+def test_eeo_and_footer_boilerplate_is_not_evergreen():
+    """Regression from production: "talent pool" gated a batch of genuine Airbnb
+    roles because it sits in their standard EEO paragraph, and "join our talent
+    community" is ATS footer text on plenty of real openings."""
+    assert "EVERGREEN" not in codes(gates.evaluate(
+        _posting(
+            title="Senior Platform Engineer",
+            body_text=(
+                "Build our payments platform.\n" + "Details. " * 200 +
+                "Airbnb is committed to working with the broadest possible talent pool. "
+                "Join our talent community for future opportunities."
+            ),
+        ),
+        _profile(),
+    ))
+
+
+def test_pipeline_requisition_stated_upfront_is_gated():
+    assert "EVERGREEN" in codes(gates.evaluate(
+        _posting(
+            title="Backend Engineer",
+            body_text="This is a general application for future roles on our team.",
+        ),
+        _profile(),
+    ))
 
 
 def test_junior_roles_are_gated_out():

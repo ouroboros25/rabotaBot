@@ -146,7 +146,10 @@ def evaluate(
     # platform roles, since CI/CD and data pipelines are in nearly all of them.
     found = _first_match(_rules("evergreen_title"), posting.title or "")
     if not found:
-        found = _first_match(_rules("evergreen_body"), posting.body_text or "")
+        # Only the opening of the description: a pipeline requisition says what
+        # it is at the top, while EEO and ATS boilerplate sits at the bottom.
+        head_chars = int(gates_cfg.get("evergreen_body_chars", 1200))
+        found = _first_match(_rules("evergreen_body"), (posting.body_text or "")[:head_chars])
     if found:
         hits.append(GateHit("EVERGREEN", found[0], found[1]))
 
