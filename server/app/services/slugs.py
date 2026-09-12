@@ -77,6 +77,15 @@ def promote_ready(db: Session, limit: int = 20) -> list[str]:
     for row in rows:
         family, param_name = _FAMILY_BY_ATS[row.ats]
         key = f"auto_{row.ats}_{row.slug}"[:80]
+
+        # A board that is already configured by hand must not be promoted again:
+        # two sources pointing at the same endpoint double the outbound traffic
+        # to a publisher that is doing us a favour by exposing it at all.
+        if _already_covered(db, family, param_name, row.slug):
+            row.promoted = True
+            row.verified_at = datetime.now(timezone.utc)
+            continue
+
         exists = db.execute(select(Source).where(Source.key == key)).scalar_one_or_none()
         if exists is None:
             db.add(Source(
@@ -100,3 +109,13 @@ def promote_ready(db: Session, limit: int = 20) -> list[str]:
     if created:
         logger.info("promoted %d harvested ATS boards: %s", len(created), created)
     return created
+
+
+def _already_covered(db: Session, family: str, param_name: str, slug: str) -> bool:
+    """True when some existing source already polls this exact board."""
+    for source in db.execute(
+        select(Source).where(Source.family == family)
+    ).scalars():
+        if str((source.params or {}).get(param_name, "")).lower() == slug.lower():
+            return True
+    return False
