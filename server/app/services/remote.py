@@ -44,10 +44,23 @@ _WEAK_REMOTE = [
     r"\bwfh\b",
 ]
 
+# Perk phrasing, not a work policy. "Up to 4 weeks to work from anywhere per
+# year" sits in the benefits list of plenty of office-first jobs, and reading it
+# as a remote policy is how a 3-days-a-week London role reached the queue.
+_PERK_CONTEXT = re.compile(
+    r"(?:up to|for)\s+\d+\s*(?:weeks?|days?|months?)|per year|a year|annually|"
+    r"\d+\s*(?:weeks?|days?)\s*(?:a|per)\s*year",
+    re.IGNORECASE,
+)
+
 # Statements that an office is part of the job.
 _ONSITE = [
     r"\bhybrid\b",
-    r"\b\d+\s*(?:\+\s*)?days?\s*(?:a|per)?\s*week\s*(?:in|at|from)\s*(?:the\s*)?office\b",
+    r"\boffice[- ]first\b",
+    # Both word orders occur: "3 days a week in the office" and
+    # "in our Shoreditch office 3 days a week".
+    r"\b\d+\s*(?:\+\s*)?days?\s*(?:a|per)?\s*week\b[^.!?]{0,40}\boffice\b",
+    r"\boffice\b[^.!?]{0,40}\b\d+\s*(?:\+\s*)?days?\s*(?:a|per)?\s*week\b",
     r"\b\d+\s*days?\s*(?:in[- ]office|onsite|on[- ]site)\b",
     r"\bin[- ]office\b",
     r"\bon[- ]?site\b(?!\s*(?:visits?|travel|interview))",
@@ -86,6 +99,21 @@ def _first(patterns: list[re.Pattern[str]], text: str) -> str | None:
     return None
 
 
+def _strong_remote_claim(text: str) -> str | None:
+    """First strong remote statement that is not a benefits perk.
+
+    A match surrounded by duration language ("up to 4 weeks", "per year") is
+    describing time off, not where the job is done.
+    """
+    for pattern in _STRONG_RE:
+        for m in pattern.finditer(text):
+            window = text[max(0, m.start() - 70):m.end() + 70]
+            if _PERK_CONTEXT.search(window):
+                continue
+            return m.group(0)
+    return None
+
+
 def classify(
     *,
     title: str | None = None,
@@ -114,7 +142,7 @@ def classify(
         return ONSITE, "source field: onsite"
 
     onsite_hit = _first(_ONSITE_RE, haystack)
-    strong_hit = _first(_STRONG_RE, haystack)
+    strong_hit = _strong_remote_claim(haystack)
 
     # An explicit full-remote statement beats an office mention: "fully remote,
     # optional access to our Berlin office" is a remote job.

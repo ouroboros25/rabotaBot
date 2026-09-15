@@ -107,3 +107,44 @@ def test_a_remote_board_listing_that_says_hybrid_is_still_rejected():
         body="Hybrid: 2 days a week in our Amsterdam office.",
         declared="global",
     ) in (HYBRID, ONSITE)
+
+
+# ----------------------------------------------- perks are not policies
+
+REAL_OFFICE_FIRST = (
+    "Flexible working: We are an office first culture and ask that you're in "
+    "our (dog-friendly) Shoreditch office 3 days a week, with core hours of "
+    "10am - 4pm. Time off: You'll get 28 days of holiday (plus bank holidays) "
+    "and up to 4 weeks to work from anywhere per year. Family matters: we offer "
+    "enhanced parental leave."
+)
+
+
+def test_work_from_anywhere_as_a_perk_is_not_a_remote_policy():
+    """Verbatim from a posting that reached the queue: an office-first London
+    job whose benefits list mentions working from anywhere for four weeks."""
+    assert policy(
+        title="Senior Machine Learning Engineer",
+        location="London (Shoreditch)",
+        body=REAL_OFFICE_FIRST,
+    ) in (HYBRID, ONSITE)
+
+
+def test_office_days_in_either_word_order():
+    assert policy(title="Engineer", body="You will be in the office 3 days a week.") \
+        in (HYBRID, ONSITE)
+    assert policy(title="Engineer", body="3 days a week in our Berlin office.") \
+        in (HYBRID, ONSITE)
+
+
+def test_office_first_culture_is_onsite():
+    assert policy(title="Engineer", body="We are an office first culture.") \
+        in (HYBRID, ONSITE)
+
+
+def test_a_genuine_work_from_anywhere_policy_still_counts():
+    """The perk rule must not swallow the real thing."""
+    assert policy(
+        title="Backend Engineer",
+        body="We are a remote company: work from anywhere, we have no offices.",
+    ) == GLOBAL
