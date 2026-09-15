@@ -159,6 +159,13 @@ def classify(
         "remote", "fully remote", "remote_first", "global", "worldwide",
         "anywhere", "true", "yes",
     ):
+        # A source flag that says "remote" while the location names a specific
+        # city is a conflict, and the city is the more concrete statement.
+        # Employers set these flags loosely, most often meaning "remote-eligible
+        # within this country". Without prose backing it up, that is not proof
+        # of location independence.
+        if location.strip() and not _REMOTE_LOCATION.match(location):
+            return UNKNOWN, None
         return GLOBAL, f"source says: {declared_norm}"
 
     if location and _REMOTE_LOCATION.match(location):

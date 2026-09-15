@@ -148,3 +148,31 @@ def test_a_genuine_work_from_anywhere_policy_still_counts():
         title="Backend Engineer",
         body="We are a remote company: work from anywhere, we have no offices.",
     ) == GLOBAL
+
+
+def test_source_remote_flag_loses_to_a_named_city():
+    """Employers set these flags loosely, usually meaning "remote-eligible in
+    this country". Seen live: OpenAI roles flagged isRemote with a San Francisco
+    location and nothing in the text about working remotely."""
+    assert policy(
+        title="Product Engineer, Full Stack",
+        location="San Francisco",
+        body="Build agent tooling with our platform team.",
+        declared="global",
+    ) == UNKNOWN
+
+
+def test_source_remote_flag_counts_without_a_conflicting_location():
+    assert policy(title="Backend Engineer", body="Build our API.", declared="global") == GLOBAL
+    assert policy(title="Backend Engineer", location="Remote - EMEA",
+                  body="Build our API.", declared="global") == GLOBAL
+
+
+def test_a_named_city_with_prose_evidence_is_still_remote():
+    """An HQ address does not disqualify a job that says it is remote."""
+    assert policy(
+        title="Backend Engineer",
+        location="Leipzig",
+        body="This role is fully remote.",
+        declared="global",
+    ) == GLOBAL
