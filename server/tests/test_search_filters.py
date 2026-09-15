@@ -87,7 +87,7 @@ def _profile():
 def _posting(**kw):
     base = dict(
         title="Senior Backend Engineer", body_text="", seniority=None,
-        countries_allowed=None, timezones_allowed=None, remote_policy="global",
+        countries_allowed=None, timezones_allowed=None, remote_policy="unknown",
         comp_min=None, comp_max=None, comp_currency="USD", comp_period="year",
         first_published_at=datetime.now(timezone.utc), updated_at_source=None,
         expires_at=None, liveness_ok=None, company_name=None, location_raw=None,
