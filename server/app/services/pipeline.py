@@ -17,7 +17,7 @@ from app.models import (
     EligibilityFlag, JobCluster, JobPosting, Profile, ProfileVariant, Score, Source,
 )
 from app.services import judge as judge_service
-from app.services import priors, scoring, search_filters
+from app.services import priors, remote, scoring, search_filters
 from app.services.gates import _seniority_rank
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,39 @@ def _canonical_posting(db: Session, cluster: JobCluster) -> JobPosting | None:
     return db.execute(
         select(JobPosting).where(JobPosting.cluster_id == cluster.id).limit(1)
     ).scalar_one_or_none()
+
+
+def _promote_remote_evidence(db: Session, cluster: JobCluster, posting: JobPosting):
+    """Make the copy that proves remoteness the one we show.
+
+    A cluster survives if any of its copies is fully remote, but the canonical
+    copy is picked for other reasons (own-ATS beats aggregator). That let a
+    cluster stay alive on one board's evidence while displaying another board's
+    copy, which reads as a plain office job when the user opens it.
+
+    Returns the posting to score and show, or None when no copy is remote.
+    """
+    verdict, _ = remote.classify(
+        title=posting.title, body=posting.body_text,
+        location=posting.location_raw, declared=posting.remote_policy,
+    )
+    if remote.is_full_remote(verdict):
+        return posting
+
+    siblings = db.execute(
+        select(JobPosting).where(
+            JobPosting.cluster_id == cluster.id, JobPosting.id != posting.id
+        )
+    ).scalars().all()
+    for sibling in siblings:
+        sibling_verdict, _ = remote.classify(
+            title=sibling.title, body=sibling.body_text,
+            location=sibling.location_raw, declared=sibling.remote_policy,
+        )
+        if remote.is_full_remote(sibling_verdict):
+            cluster.canonical_posting_id = sibling.id
+            return sibling
+    return None
 
 
 def scorable_clusters(db: Session, limit: int) -> list[JobCluster]:
@@ -121,6 +154,11 @@ def score_batch(db: Session, limit: int = 600) -> dict[str, int]:
         if _all_postings_gated(db, cluster.id):
             cluster.status = "gated"
             continue
+        if filters.require_full_remote:
+            posting = _promote_remote_evidence(db, cluster, posting)
+            if posting is None:
+                cluster.status = "gated"
+                continue
         track = _pick_track(cluster, variants)
         variant = variants.get(track)
         if variant is None:
