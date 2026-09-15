@@ -68,6 +68,19 @@ LENGTH BUDGET (your reply is truncated past it, which loses the whole verdict):
 - no prose outside the JSON"""
 
 
+def _criteria_block(filters) -> str:
+    """What the judge is actually judging against in keywords-only mode."""
+    return json.dumps(
+        {
+            "required_keywords_any_of": list(filters.require_any or []),
+            "preferred_keywords": list(filters.boost or []),
+            "must_be_fully_remote": bool(filters.require_full_remote),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def _profile_block(profile, variant) -> str:
     return json.dumps(
         {
@@ -140,10 +153,32 @@ def screen(posting, profile, variant, source_key: str) -> dict[str, Any] | None:
         return None
 
 
-def judge(posting, profile, variant, source_key: str) -> dict[str, Any] | None:
-    """Deep pass with mandatory evidence spans."""
+def judge(
+    posting, profile, variant, source_key: str, filters=None,
+) -> dict[str, Any] | None:
+    """Deep pass with mandatory evidence spans.
+
+    In keywords-only mode the judge is given the keyword list and the remote
+    requirement as its criteria instead of the profile. Handing it the profile
+    would smuggle the skill lists back into a ranking the user asked to be
+    driven by their words alone.
+    """
+    keywords_only = bool(getattr(filters, "keywords_only", False))
+    if keywords_only:
+        criteria = (
+            f"SEARCH CRITERIA (the only thing to judge against):\n"
+            f"{_criteria_block(filters)}\n\n"
+            "Rate fit_0_10 ONLY on: does this posting genuinely match the required "
+            "keywords, and is it genuinely a fully remote job or project. Ignore "
+            "seniority, salary and career logic entirely; they are not criteria here.\n"
+            "Set a disqualifier if the role is hybrid, onsite, or requires presence "
+            "in a specific place."
+        )
+    else:
+        criteria = f"CANDIDATE PROFILE:\n{_profile_block(profile, variant)}"
+
     user = (
-        f"CANDIDATE PROFILE:\n{_profile_block(profile, variant)}\n\n"
+        f"{criteria}\n\n"
         f"RUBRIC (the candidate's own, use it verbatim):\n{_rubric_block()}\n\n"
         f"POSTING:\n{_posting_block(posting, source_key)}"
     )

@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from app.models import JobPosting, Profile
-from app.services import geo, search_filters
+from app.services import geo, remote, search_filters
 from app.services.configload import load_rubric
 
 
@@ -124,8 +124,25 @@ def evaluate(
                 "GEO_FENCED", "title_region", f"{posting.title} -> {', '.join(inferred or [])}"[:200],
             ))
 
-    if posting.remote_policy in ("hybrid", "onsite"):
-        hits.append(GateHit("HYBRID_ONSITE", "remote_policy", posting.remote_policy))
+    keywords_only = bool(getattr(filters, "keywords_only", False))
+    require_remote = bool(getattr(filters, "require_full_remote", False))
+
+    # Remote classification is recomputed here rather than trusted from ingest,
+    # so tightening the rules applies to everything already collected on the next
+    # re-check instead of only to new intake.
+    policy, evidence = remote.classify(
+        title=posting.title, body=posting.body_text,
+        location=posting.location_raw, declared=posting.remote_policy,
+    )
+    if policy in ("hybrid", "onsite"):
+        hits.append(GateHit("HYBRID_ONSITE", "remote", evidence or policy))
+    elif require_remote and not remote.is_full_remote(policy):
+        # Silence is treated as onsite: most postings that never say "remote"
+        # are not remote, and this filter exists to stop exactly those.
+        hits.append(GateHit(
+            "NOT_FULL_REMOTE", "remote",
+            "nothing in the posting says it is remote",
+        ))
 
     # --- regex gates over free text ---
     for code, rule_name in (
@@ -153,20 +170,26 @@ def evaluate(
     if found:
         hits.append(GateHit("EVERGREEN", found[0], found[1]))
 
+    # The three gates below read the PROFILE, not the keywords. In
+    # keywords-only mode they are off: the user asked to match on their words
+    # and nothing else, and a silent seniority or salary filter on top of that
+    # is the opposite of what they asked for.
+
     # --- seniority ---
     rank = _seniority_rank(posting)
-    if rank is not None and rank <= 2:
+    if not keywords_only and rank is not None and rank <= 2:
         hits.append(GateHit("SENIORITY_OUT", "seniority", posting.seniority or posting.title))
 
     # --- compensation floor ---
-    floor = profile.comp_floor_annual
+    floor = None if keywords_only else profile.comp_floor_annual
     if floor and posting.comp_max:
         annual = _to_annual(posting.comp_max, posting.comp_period)
         if annual is not None and annual < floor * 0.85:  # 15% tolerance for FX/banding
             hits.append(GateHit("COMP_FLOOR", "comp_max", f"{posting.comp_max} {posting.comp_currency or ''}"))
 
-    # --- excluded stack ---
-    if variant is not None:
+    # --- excluded stack (profile-derived; the user's own exclude list is
+    # authoritative in keywords-only mode) ---
+    if variant is not None and not keywords_only:
         for skill in variant.exclude_skills or []:
             if re.search(rf"\b{re.escape(str(skill))}\b", text, re.IGNORECASE):
                 hits.append(GateHit("STACK_EXCLUDE", skill, skill))

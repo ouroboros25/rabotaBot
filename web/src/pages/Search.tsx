@@ -51,6 +51,8 @@ export default function SearchPage() {
         exclude_sources: form.exclude_sources,
         max_age_days: Number(form.max_age_days) || 0,
         min_priority: Number(form.min_priority) || 0,
+        require_full_remote: !!form.require_full_remote,
+        keywords_only: !!form.keywords_only,
       });
       setForm({ ...form, ...saved });
 
@@ -90,10 +92,44 @@ export default function SearchPage() {
         <div className="card border-accent/40 bg-accent/10 p-3 text-sm text-accent">{note}</div>
       )}
 
+      <Panel title="Режим поиска">
+        <div className="flex flex-col gap-3">
+          <Toggle
+            checked={!!form.keywords_only}
+            onChange={(v) => set('keywords_only', v)}
+            label="Искать только по ключевым словам"
+            hint={
+              'Совпадение считается по тегам ниже и больше ни по чему. ' +
+              'Навыки, должности, грейд и зарплатный пол из профиля перестают ' +
+              'влиять и на отбор, и на порядок. Выключите, если хотите вернуть ' +
+              'подбор по профилю.'
+            }
+          />
+          <Toggle
+            checked={!!form.require_full_remote}
+            onChange={(v) => set('require_full_remote', v)}
+            label="Только полностью удалённые"
+            hint={
+              'Гибрид, офис и «X дней в неделю в офисе» отбрасываются. ' +
+              'Вакансия, которая нигде не говорит про удалёнку, тоже ' +
+              'отбрасывается: это осознанно строго, потому что молчание почти ' +
+              'всегда означает офис. Ограничение по странам работает отдельно.'
+            }
+          />
+        </div>
+      </Panel>
+
       <Panel
         title="По каким словам искать"
         right={<Link to="/queue" className="label hover:text-accent">в очередь →</Link>}
       >
+        {form.keywords_only && !(form.require_any ?? []).length && (
+          <div className="card border-warn/40 bg-warn/10 p-3 text-sm text-warn mb-4">
+            Режим «только по ключевым словам» включён, но слов нет. Пока список
+            пуст, отбирать не по чему: в очередь попадает всё подряд, а порядок
+            держится только на свежести и качестве источника.
+          </div>
+        )}
         <p className="text-sm text-muted mb-5">
           Эти теги определяют и что попадает в очередь, и как оно ранжируется.
           Регистр не важен. Совпадение идёт по границе слова, поэтому{' '}
@@ -104,7 +140,7 @@ export default function SearchPage() {
         <div className="flex flex-col gap-5">
           <Field
             label="Обязательно хотя бы одно"
-            hint="Главный переключатель. Вакансия отбрасывается, если не встретилось ни одного из этих слов, а совпавшие поднимаются в выдаче. Пусто — требования нет, показывается всё подряд."
+            hint="Главное поле. Вакансия отбрасывается, если не встретилось ни одного из этих слов. Чем больше слов из списка совпало, тем выше вакансия в выдаче."
           >
             <TagInput
               value={form.require_any} tone="accent"
@@ -203,6 +239,23 @@ export default function SearchPage() {
         </div>
       </Panel>
     </div>
+  );
+}
+
+function Toggle({ checked, onChange, label, hint }: {
+  checked: boolean; onChange: (v: boolean) => void; label: string; hint: string;
+}) {
+  return (
+    <label className="flex gap-3 items-start cursor-pointer">
+      <input
+        type="checkbox" checked={checked} className="mt-1"
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="flex flex-col gap-0.5">
+        <span className="text-sm font-medium">{label}</span>
+        <span className="text-xs text-muted">{hint}</span>
+      </span>
+    </label>
   );
 }
 

@@ -90,7 +90,7 @@ def _posting(**kw):
         countries_allowed=None, timezones_allowed=None, remote_policy="global",
         comp_min=None, comp_max=None, comp_currency="USD", comp_period="year",
         first_published_at=datetime.now(timezone.utc), updated_at_source=None,
-        expires_at=None, liveness_ok=None, company_name=None,
+        expires_at=None, liveness_ok=None, company_name=None, location_raw=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -101,7 +101,7 @@ def codes(hits):
 
 
 def test_exclude_keyword_rejects():
-    f = SearchFilters(exclude=["wordpress"])
+    f = SearchFilters(exclude=["wordpress"], require_full_remote=False)
     hits = gates.evaluate(
         _posting(body_text="Maintain a WordPress site"), _profile(), None, f
     )
@@ -110,7 +110,7 @@ def test_exclude_keyword_rejects():
 
 def test_exclude_title_only_looks_at_the_title():
     """"manager" in a body is normal; in a title it is disqualifying."""
-    f = SearchFilters(exclude_title=["manager"])
+    f = SearchFilters(exclude_title=["manager"], require_full_remote=False)
     assert "TITLE_EXCLUDE" in codes(
         gates.evaluate(_posting(title="Engineering Manager"), _profile(), None, f)
     )
@@ -123,7 +123,7 @@ def test_exclude_title_only_looks_at_the_title():
 
 
 def test_require_any_rejects_only_when_nothing_matches():
-    f = SearchFilters(require_any=["azure", "aws"])
+    f = SearchFilters(require_any=["azure", "aws"], require_full_remote=False)
     assert "KEYWORD_MISSING" in codes(
         gates.evaluate(_posting(body_text="On-prem VMware shop"), _profile(), None, f)
     )
@@ -134,12 +134,13 @@ def test_require_any_rejects_only_when_nothing_matches():
 
 def test_empty_require_any_is_not_a_requirement():
     """An empty list means "no requirement", not "require nothing"."""
-    hits = gates.evaluate(_posting(body_text="anything"), _profile(), None, SearchFilters())
+    hits = gates.evaluate(_posting(body_text="anything"), _profile(), None,
+                           SearchFilters(require_full_remote=False))
     assert "KEYWORD_MISSING" not in codes(hits)
 
 
 def test_company_exclusion_is_substring_and_case_insensitive():
-    f = SearchFilters(exclude_companies=["andela"])
+    f = SearchFilters(exclude_companies=["andela"], require_full_remote=False)
     assert "COMPANY_EXCLUDE" in codes(
         gates.evaluate(_posting(company_name="Andela Talent Cloud"), _profile(), None, f)
     )
@@ -150,7 +151,7 @@ def test_company_exclusion_is_substring_and_case_insensitive():
 
 def test_max_age_filter():
     old = datetime.now(timezone.utc) - timedelta(days=40)
-    f = SearchFilters(max_age_days=14)
+    f = SearchFilters(max_age_days=14, require_full_remote=False)
     assert "TOO_OLD" in codes(
         gates.evaluate(_posting(first_published_at=old), _profile(), None, f)
     )
@@ -158,15 +159,21 @@ def test_max_age_filter():
     # 0 disables the filter entirely.
     assert "TOO_OLD" not in codes(
         gates.evaluate(_posting(first_published_at=old), _profile(), None,
-                       SearchFilters(max_age_days=0))
+                       SearchFilters(max_age_days=0, require_full_remote=False))
     )
 
 
-def test_no_filters_object_changes_nothing():
-    """Passing None must behave exactly like an empty filter set."""
+def test_no_filters_object_means_every_switch_off():
+    """Passing None must behave like a filter set with nothing enabled.
+
+    Not like a default SearchFilters(): those default to strict (full remote
+    required, keywords-only on), which is right for the product and wrong as the
+    meaning of "no filters were supplied".
+    """
     posting = _posting(body_text="WordPress everywhere", title="Manager")
+    permissive = SearchFilters(require_full_remote=False, keywords_only=False)
     assert codes(gates.evaluate(posting, _profile(), None, None)) == \
-           codes(gates.evaluate(posting, _profile(), None, SearchFilters()))
+           codes(gates.evaluate(posting, _profile(), None, permissive))
 
 
 def test_search_tags_feed_the_ranking_not_only_the_filter():
@@ -248,10 +255,7 @@ def test_save_keeps_the_value_it_replaced():
     testing and there was no way to recover it."""
     from app.services import search_filters as sf
 
-    db = _FakeDB(_FakeSetting({"require_any": ["dotnet"], "exclude": [],
-                               "exclude_title": [], "boost": [],
-                               "exclude_companies": [], "exclude_sources": [],
-                               "max_age_days": 0, "min_priority": 0.0}))
+    db = _FakeDB(_FakeSetting(SearchFilters(require_any=["dotnet"]).as_dict()))
     sf.save(db, SearchFilters(require_any=["python"]))
 
     assert db.row.value["require_any"] == ["python"]
@@ -263,9 +267,7 @@ def test_load_ignores_the_history_key():
     from app.services import search_filters as sf
 
     db = _FakeDB(_FakeSetting({
-        "require_any": ["python"], "exclude": [], "exclude_title": [], "boost": [],
-        "exclude_companies": [], "exclude_sources": [], "max_age_days": 0,
-        "min_priority": 0.0,
+        **SearchFilters(require_any=["python"]).as_dict(),
         "_previous": {"require_any": ["dotnet"]},
     }))
     loaded = sf.load(db)
@@ -276,9 +278,89 @@ def test_load_ignores_the_history_key():
 def test_saving_the_same_value_does_not_shift_history():
     from app.services import search_filters as sf
 
-    db = _FakeDB(_FakeSetting({"require_any": ["dotnet"], "exclude": [],
-                               "exclude_title": [], "boost": [],
-                               "exclude_companies": [], "exclude_sources": [],
-                               "max_age_days": 0, "min_priority": 0.0}))
+    db = _FakeDB(_FakeSetting(SearchFilters(require_any=["dotnet"]).as_dict()))
     sf.save(db, SearchFilters(require_any=["dotnet"]))
     assert "_previous" not in db.row.value, "an unchanged save must not lose history"
+
+
+# ---------------------------------------------------------------- modes
+
+def test_full_remote_gate_rejects_silence_and_offices():
+    f = SearchFilters(require_full_remote=True)
+    assert "NOT_FULL_REMOTE" in codes(gates.evaluate(
+        _posting(title="Senior Backend Engineer",
+                 body_text="Join our payments team in New York."),
+        _profile(), None, f,
+    ))
+    assert "HYBRID_ONSITE" in codes(gates.evaluate(
+        _posting(body_text="Hybrid, 3 days a week in the office"), _profile(), None, f,
+    ))
+    assert "NOT_FULL_REMOTE" not in codes(gates.evaluate(
+        _posting(body_text="This is a 100% remote role."), _profile(), None, f,
+    ))
+
+
+def test_full_remote_gate_can_be_turned_off():
+    f = SearchFilters(require_full_remote=False)
+    assert "NOT_FULL_REMOTE" not in codes(gates.evaluate(
+        _posting(body_text="Join our payments team in New York."), _profile(), None, f,
+    ))
+
+
+def test_keywords_only_disables_profile_derived_gates():
+    """Seniority, salary floor and the profile's excluded stack all come from the
+    profile, not from the keywords. Applying them silently on top of a keyword
+    search is the opposite of what "search only by these words" asks for."""
+    variant = SimpleNamespace(exclude_skills=["php"])
+    posting = _posting(
+        title="Junior PHP Developer",
+        body_text="100% remote. We use PHP.",
+        comp_max=20000,
+    )
+    profile = SimpleNamespace(
+        countries_eligible=["UA", "PL"], comp_floor_annual=90000, min_overlap_hours=4,
+    )
+
+    strict = codes(gates.evaluate(
+        posting, profile, variant, SearchFilters(keywords_only=False)))
+    assert {"SENIORITY_OUT", "COMP_FLOOR", "STACK_EXCLUDE"} <= strict
+
+    kw = codes(gates.evaluate(
+        posting, profile, variant, SearchFilters(keywords_only=True)))
+    assert not ({"SENIORITY_OUT", "COMP_FLOOR", "STACK_EXCLUDE"} & kw)
+
+
+def test_keyword_coverage_rewards_matching_more_of_the_set():
+    from app.services.scoring import keyword_coverage
+
+    f = SearchFilters(require_any=["python", "django", "fastapi"])
+    few, _ = keyword_coverage("We use Python here.", f)
+    many, hits = keyword_coverage("Python, Django and FastAPI.", f)
+    assert many > few
+    assert set(hits) == {"python", "django", "fastapi"}
+
+
+def test_keyword_coverage_without_keywords_is_neutral():
+    from app.services.scoring import keyword_coverage
+
+    score, hits = keyword_coverage("anything at all", SearchFilters())
+    assert score == 0.5 and hits == []
+
+
+def test_keywords_only_fit_ignores_the_profile():
+    """Two postings with identical keyword coverage must rank the same, however
+    differently they match the profile's own skills."""
+    from app.services.scoring import FastScore, compute_priority
+
+    def priority(semantic, skill_cov):
+        fast = FastScore(
+            semantic=semantic, skill_coverage=skill_cov, title_fit=0.9,
+            freshness=0.8, comp_fit=0.9, source_prior=0.5, ghost_risk=0.0,
+            crowding=0.0, keyword_coverage=1.0,
+        )
+        return compute_priority(
+            fast=fast, llm_fit=8, seniority_fit=1.0, track_weight=0.35,
+            keywords_only=True,
+        )[0]
+
+    assert priority(1.0, 1.0) == priority(0.0, 0.0)

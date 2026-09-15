@@ -139,6 +139,7 @@ def score_batch(db: Session, limit: int = 600) -> dict[str, int]:
             fast=fast, llm_fit=None, seniority_fit=seniority_fit,
             track_weight=track_weight,
             liveness_ok=posting.liveness_ok is not False,
+            keywords_only=filters.keywords_only,
         )
 
         _upsert_score(db, cluster, track, fast, parts, priority, posting)
@@ -188,7 +189,9 @@ def _upsert_score(db, cluster, track, fast, parts, priority, posting) -> Score:
     row.features = {
         "matched_skills": fast.detail.get("matched_skills", []),
         "boost_hits": fast.detail.get("boost_hits", []),
+        "keyword_hits": fast.detail.get("keyword_hits", []),
         "keyword_boost": round(fast.keyword_boost, 3),
+        "keyword_coverage": round(fast.keyword_coverage, 3),
     }
     row.explain = scoring.explain(fast, parts, priority)
     db.flush()
@@ -213,6 +216,8 @@ def judge_top(db: Session, top_k: int | None = None) -> dict[str, int]:
         ).scalars()
     }
 
+    filters = search_filters.load(db)
+
     rows = db.execute(
         select(Score)
         .where(Score.llm_fit.is_(None), Score.priority > 0)
@@ -230,7 +235,9 @@ def judge_top(db: Session, top_k: int | None = None) -> dict[str, int]:
         if posting is None or variant is None:
             continue
         source = db.get(Source, posting.source_id)
-        verdict = judge_service.judge(posting, profile, variant, source.key if source else "?")
+        verdict = judge_service.judge(
+            posting, profile, variant, source.key if source else "?", filters=filters,
+        )
         if verdict is None:
             break  # gateway is down or capped; stop rather than hammer it
 
@@ -246,6 +253,7 @@ def judge_top(db: Session, top_k: int | None = None) -> dict[str, int]:
             source_prior=row.source_prior, ghost_risk=row.ghost_risk,
             crowding=row.crowding, s_fast=row.s_fast,
             keyword_boost=float((row.features or {}).get("keyword_boost") or 0.0),
+            keyword_coverage=float((row.features or {}).get("keyword_coverage") or 0.0),
             detail=row.features or {},
         )
         priority, parts = scoring.compute_priority(
@@ -260,6 +268,7 @@ def judge_top(db: Session, top_k: int | None = None) -> dict[str, int]:
             strategic_fit=scoring.clamp01(verdict.get("strategic_fit"), default=0.5),
             liveness_ok=posting.liveness_ok is not False,
             injection_suspected=row.injection_suspected,
+            keywords_only=filters.keywords_only,
         )
         row.fit, row.trust, row.reach, row.value = (
             parts["fit"], parts["trust"], parts["reach"], parts["value"]

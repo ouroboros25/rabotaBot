@@ -46,6 +46,13 @@ class SearchFilters:
     max_age_days: int = 0
     # Hide anything scoring below this in the queue and the digest.
     min_priority: float = 0.0
+    # Reject anything not provably location-independent. Strict by design:
+    # silence about remote is treated as onsite.
+    require_full_remote: bool = True
+    # Rank by the keywords above and nothing else. With this on, the profile's
+    # per-track skill lists, target titles, seniority band and salary floor stop
+    # influencing matching: "search by these words" means only these words.
+    keywords_only: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -77,6 +84,8 @@ def load(db: Session) -> SearchFilters:
         exclude_sources=_clean_terms(data.get("exclude_sources")),
         max_age_days=max(0, int(data.get("max_age_days") or 0)),
         min_priority=max(0.0, float(data.get("min_priority") or 0.0)),
+        require_full_remote=bool(data.get("require_full_remote", True)),
+        keywords_only=bool(data.get("keywords_only", True)),
     )
 
 
@@ -95,6 +104,8 @@ def normalize(filters: SearchFilters) -> SearchFilters:
         exclude_sources=_clean_terms(filters.exclude_sources),
         max_age_days=max(0, int(filters.max_age_days or 0)),
         min_priority=max(0.0, float(filters.min_priority or 0.0)),
+        require_full_remote=bool(filters.require_full_remote),
+        keywords_only=bool(filters.keywords_only),
     )
 
 

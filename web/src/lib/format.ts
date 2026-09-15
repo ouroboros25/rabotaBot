@@ -42,4 +42,7 @@ export const GATE_LABEL: Record<string, string> = {
   COMP_FLOOR: 'ниже пола', STACK_EXCLUDE: 'исключённый стек',
   EMPLOYMENT_MISMATCH: 'форма занятости', BLOCKLIST: 'чёрный список',
   EXPIRED: 'истекло', TZ_MISMATCH: 'таймзона', DUPLICATE_OF: 'дубль',
+  NOT_FULL_REMOTE: 'не полная удалёнка', KEYWORD_MISSING: 'нет ключевых слов',
+  KEYWORD_EXCLUDE: 'запрещённое слово', TITLE_EXCLUDE: 'слово в заголовке',
+  COMPANY_EXCLUDE: 'компания в игноре', TOO_OLD: 'слишком старая',
 };

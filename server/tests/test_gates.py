@@ -18,7 +18,7 @@ def _posting(**kw):
         countries_allowed=None, timezones_allowed=None, remote_policy="global",
         comp_min=None, comp_max=None, comp_currency="USD", comp_period="year",
         first_published_at=datetime.now(timezone.utc), updated_at_source=None,
-        expires_at=None, liveness_ok=None,
+        expires_at=None, liveness_ok=None, company_name=None, location_raw=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)

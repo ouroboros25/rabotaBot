@@ -30,6 +30,7 @@ class FastScore:
     ghost_risk: float = 0.0
     crowding: float = 0.0
     keyword_boost: float = 0.0
+    keyword_coverage: float = 0.0
     s_fast: float = 0.0
     detail: dict = field(default_factory=dict)
 
@@ -99,6 +100,34 @@ def _mentions(haystack: str, skill: str) -> bool:
     if skill == "csharp":
         variants |= {"c#", ".net"}
     return any(re.search(rf"(?<![\w]){re.escape(v)}(?![\w])", haystack) for v in variants if v)
+
+
+def keyword_coverage(text: str, filters) -> tuple[float, list[str]]:
+    """How much of the user's keyword set this posting actually satisfies.
+
+    Required terms carry full weight, boost terms a third. Coverage rather than
+    a simple yes/no so that a posting hitting four of five required words
+    outranks one hitting a single word, which is what a person means by "the
+    best match for my keywords".
+
+    With no keywords configured there is nothing to match on, so everything is
+    equal and the ranking falls through to freshness and source quality.
+    """
+    if filters is None:
+        return 0.5, []
+    required = list(filters.require_any or [])
+    boosts = [t for t in (filters.boost or []) if t not in required]
+    if not required and not boosts:
+        return 0.5, []
+
+    from app.services.search_filters import matches
+
+    hit_required = [t for t in required if matches(t, text)]
+    hit_boost = [t for t in boosts if matches(t, text)]
+
+    weighted = len(hit_required) + 0.33 * len(hit_boost)
+    denominator = len(required) + 0.33 * len(boosts)
+    return min(1.0, weighted / denominator) if denominator else 0.5, hit_required + hit_boost
 
 
 def title_fit(title: str, variant: ProfileVariant) -> float:
@@ -185,6 +214,7 @@ def compute_fast(
 ) -> FastScore:
     w = load_rubric().get("weights", {})
     text = f"{posting.title or ''}\n{posting.body_text or ''}"
+    keywords_only = bool(getattr(filters, "keywords_only", False))
     # Search tags are repeated so they weigh as much as configured must-haves:
     # a tag the user typed today is a stronger statement of intent than a skill
     # list they filled in once.
@@ -216,22 +246,42 @@ def compute_fast(
 
         boost, boost_hits = boost_score(filters, text)
 
-    raw = (
-        float(w.get("semantic", 0.30)) * sem
-        + float(w.get("skill_coverage", 0.20)) * cov
-        + float(w.get("title_fit", 0.10)) * tfit
-        + float(w.get("freshness", 0.15)) * fresh
-        + float(w.get("comp_fit", 0.10)) * cfit
-        + float(w.get("source_prior", 0.15)) * source_prior
-    )
+    kw_cov, kw_hits = keyword_coverage(text, filters)
+
+    if keywords_only:
+        # Matching is the keywords and nothing else. Freshness and source prior
+        # stay in the sum because they are not matching criteria: they describe
+        # whether a matched posting is worth acting on today and where it came
+        # from. Semantic similarity, the profile skill lists and title fit are
+        # all dropped, which is the whole point of the mode.
+        raw = (
+            0.70 * kw_cov
+            + 0.20 * fresh
+            + 0.10 * source_prior
+        )
+        matched = kw_hits
+    else:
+        raw = (
+            float(w.get("semantic", 0.30)) * sem
+            + float(w.get("skill_coverage", 0.20)) * cov
+            + float(w.get("title_fit", 0.10)) * tfit
+            + float(w.get("freshness", 0.15)) * fresh
+            + float(w.get("comp_fit", 0.10)) * cfit
+            + float(w.get("source_prior", 0.15)) * source_prior
+        )
+
     s_fast = 100.0 * min(1.0, raw + boost) * (1.0 - 0.5 * ghost)
 
     return FastScore(
         semantic=sem, skill_coverage=cov, title_fit=tfit, freshness=fresh,
         comp_fit=cfit, source_prior=source_prior, ghost_risk=ghost, crowding=crowd,
-        keyword_boost=boost,
+        keyword_boost=boost, keyword_coverage=kw_cov,
         s_fast=round(s_fast, 2),
-        detail={"matched_skills": matched, "boost_hits": boost_hits},
+        detail={
+            "matched_skills": matched,
+            "boost_hits": boost_hits,
+            "keyword_hits": kw_hits,
+        },
     )
 
 
@@ -266,6 +316,7 @@ def compute_priority(
     strategic_fit: float = 0.5,
     liveness_ok: bool = True,
     injection_suspected: bool = False,
+    keywords_only: bool = False,
 ) -> tuple[float, dict[str, float]]:
     """Priority = 1000 * Fit^1.4 * Trust * (0.30 + 0.70*Reach) * (0.40 + 0.60*Value)
 
@@ -286,13 +337,18 @@ def compute_priority(
     strategic_fit = clamp01(strategic_fit)
     track_weight = clamp01(track_weight, default=0.25)
 
-    fit = clamp01(
-        float(fw.get("llm", 0.35)) * llm_component
-        + float(fw.get("semantic", 0.25)) * fast.semantic
-        + float(fw.get("skill_coverage", 0.25)) * fast.skill_coverage
-        + float(fw.get("seniority", 0.15)) * seniority_fit,
-        default=0.0,
-    )
+    if keywords_only:
+        # Fit is the keyword match, with the judge as a sanity check on top.
+        # Nothing from the profile enters here: that is what the mode means.
+        fit = clamp01(0.70 * fast.keyword_coverage + 0.30 * llm_component, default=0.0)
+    else:
+        fit = clamp01(
+            float(fw.get("llm", 0.35)) * llm_component
+            + float(fw.get("semantic", 0.25)) * fast.semantic
+            + float(fw.get("skill_coverage", 0.25)) * fast.skill_coverage
+            + float(fw.get("seniority", 0.15)) * seniority_fit,
+            default=0.0,
+        )
 
     # A judge verdict of 3/10 is a strong signal and must not be outvoted by a
     # high keyword overlap. Below the "all must-haves present" anchor (7) the
@@ -317,12 +373,17 @@ def compute_priority(
         + float(rw.get("warm_path", 0.25)) * warm_path
         + float(rw.get("uncrowded", 0.10)) * (1.0 - fast.crowding)
     )
-    value = clamp01(
-        float(vw.get("comp_fit", 0.55)) * fast.comp_fit
-        + float(vw.get("track_weight", 0.25)) * track_weight
-        + float(vw.get("strategic_fit", 0.20)) * strategic_fit,
-        default=0.0,
-    )
+    if keywords_only:
+        # Compensation fit and track weight both come from the profile. Left in,
+        # they would quietly reorder a keyword search by salary expectations.
+        value = clamp01(0.5 + 0.5 * strategic_fit, default=0.5)
+    else:
+        value = clamp01(
+            float(vw.get("comp_fit", 0.55)) * fast.comp_fit
+            + float(vw.get("track_weight", 0.25)) * track_weight
+            + float(vw.get("strategic_fit", 0.20)) * strategic_fit,
+            default=0.0,
+        )
     reach = clamp01(reach, default=0.0)
 
     priority = (
@@ -357,8 +418,13 @@ def explain(fast: FastScore, parts: dict[str, float], priority: float) -> str:
         f"  source prior {fast.source_prior:.2f} | ghost risk {fast.ghost_risk:.2f} "
         f"| crowding {fast.crowding:.2f}",
     ]
+    kw_hits = fast.detail.get("keyword_hits") or []
+    if kw_hits:
+        lines.append(
+            f"  keywords {fast.keyword_coverage:.0%}: " + ", ".join(kw_hits[:12])
+        )
     matched = fast.detail.get("matched_skills") or []
-    if matched:
+    if matched and matched != kw_hits:
         lines.append("  matched: " + ", ".join(matched[:12]))
     boost_hits = fast.detail.get("boost_hits") or []
     if boost_hits:
