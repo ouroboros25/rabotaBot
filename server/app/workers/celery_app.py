@@ -38,6 +38,7 @@ celery_app.conf.update(
         "rabota.judge*": {"queue": "score"},
         "rabota.draft*": {"queue": "draft"},
         "rabota.digest*": {"queue": "notify"},
+        "rabota.notify*": {"queue": "notify"},
         "rabota.retro*": {"queue": "notify"},
         "rabota.followups*": {"queue": "notify"},
     },
@@ -57,6 +58,10 @@ celery_app.conf.update(
         "judge-top": {
             "task": "rabota.judge.top",
             "schedule": crontab(minute="25"),
+        },
+        "push-new-matches": {
+            "task": "rabota.notify.new",
+            "schedule": crontab(minute="15,45"),
         },
         "daily-digest": {
             "task": "rabota.digest.daily",

@@ -170,19 +170,29 @@ class WorkableSearchConnector(Connector):
     family = "workable_search"
 
     def fetch(self) -> FetchResult:
-        query = self.params.get("query", "software engineer")
+        # Queries come from the user's own keywords when they have any. A search
+        # source whose query is hardcoded in YAML collects for someone else's
+        # search: the tags have to reach the fetch, not only the filter.
+        queries = self.params.get("_queries") or [
+            self.params.get("query", "software engineer")
+        ]
         max_pages = int(self.params.get("max_pages", 3))
         items: list[RawItem] = []
-        token: str | None = None
         drift = None
+
+        for query in queries[:6]:
+            items.extend(self._search(query, max_pages))
+        return FetchResult(items, self._bytes, self._status, drift)
+
+    def _search(self, query: str, max_pages: int) -> list[RawItem]:
+        items: list[RawItem] = []
+        token: str | None = None
 
         for page in range(max_pages):
             url = f"https://jobs.workable.com/api/v1/jobs?query={httpx_quote(query)}"
             if token:
                 url += f"&pageToken={httpx_quote(token)}"
             data = self.get(url).json()
-            if page == 0 and not data.get("totalSize"):
-                drift = "totalSize=0 on first page: an unsupported filter param may have been added"
             for job in data.get("jobs", []):
                 company = job.get("company") or {}
                 loc = job.get("location") or {}
@@ -205,7 +215,7 @@ class WorkableSearchConnector(Connector):
             token = data.get("nextPageToken")
             if not token:
                 break
-        return FetchResult(items, self._bytes, self._status, drift)
+        return items
 
 
 def httpx_quote(value: str) -> str:

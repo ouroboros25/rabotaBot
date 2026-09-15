@@ -1,8 +1,12 @@
-"""Telegram card rendering and push, used by workers.
+"""Telegram card rendering and push.
 
-The interaction shape is triage, not authoring: a handful of cards a day, each a
-five-second accept or skip, usually on a phone. Everything on a card exists to
-make that decision in five seconds or to explain why the bot ranked it there.
+The card is read on a phone, in a gap, and the decision it supports is "open
+this or not". So it leads with the job and the reason it matched, and keeps the
+scoring internals out of the way: a person does not act on "source prior 0.31",
+they act on "matched python, azure" and "posted 3 hours ago".
+
+Warnings appear only when there is something to warn about. A card that always
+shows six metrics teaches the reader to skip all six.
 """
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Application, Draft, JobCluster, Score, SkipFeedback, Source,
+    Application, Draft, JobCluster, Score, SkipFeedback,
 )
 from app.services import notify, queue as queue_service
 
@@ -32,95 +36,170 @@ def esc(value) -> str:
 
 def _age(dt: datetime | None) -> str:
     if dt is None:
-        return "возраст неизвестен"
+        return "дата неизвестна"
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     delta = datetime.now(timezone.utc) - dt
     hours = delta.total_seconds() / 3600
-    if hours < 1:
+    if hours < 2:
         return "только что"
-    if hours < 48:
+    if hours < 24:
         return f"{int(hours)} ч назад"
-    return f"{delta.days} дн назад"
+    if delta.days == 1:
+        return "вчера"
+    if delta.days < 7:
+        return f"{delta.days} дн назад"
+    if delta.days < 30:
+        return f"{delta.days // 7} нед назад"
+    return f"{delta.days // 30} мес назад"
 
 
-def _comp(row: dict) -> str:
-    lo, hi, cur = row.get("comp_min"), row.get("comp_max"), row.get("comp_currency") or ""
+def _money(row: dict) -> str | None:
+    lo, hi = row.get("comp_min"), row.get("comp_max")
+    cur = (row.get("comp_currency") or "").upper()
     if not lo and not hi:
-        return "вилка не указана"
-    if lo and hi:
-        return f"{int(lo):,}-{int(hi):,} {cur}".replace(",", " ")
-    return f"{int(hi or lo):,} {cur}".replace(",", " ")
+        return None
+    symbol = {"USD": "$", "EUR": "€", "GBP": "£"}.get(cur, "")
+
+    def fmt(value: float) -> str:
+        if value >= 1000:
+            return f"{symbol}{value / 1000:.0f}k" if symbol else f"{value / 1000:.0f}k {cur}"
+        return f"{symbol}{value:.0f}" if symbol else f"{value:.0f} {cur}"
+
+    if lo and hi and lo != hi:
+        return f"{fmt(lo)}–{fmt(hi)}"
+    return fmt(hi or lo)
 
 
-def _signal_line(row: dict) -> str:
-    bits = [f"источник {esc(row.get('source_key'))} ({row.get('source_prior', 0):.0%})"]
-    fan = row.get("fan_out", 1)
-    # Fan-out is shown as a warning, not a badge: a job every scanner found is a
-    # more crowded auction, which measurably lowers the reply rate.
-    bits.append(f"на {fan} площадк{'е' if fan == 1 else 'ах'}"
-                + (" ⚠ толпа" if fan >= 4 else ""))
-    ghost = row.get("ghost_risk") or 0
-    if ghost >= 0.3:
-        bits.append(f"⚠ риск фейка {ghost:.0%}")
-    return " · ".join(bits)
+def _match_line(row: dict) -> str | None:
+    """Why this is here at all. The single most useful line on the card."""
+    hits = row.get("keyword_hits") or []
+    if not hits:
+        return None
+    total = row.get("keyword_total") or len(hits)
+    shown = ", ".join(esc(h) for h in hits[:6])
+    if len(hits) < total:
+        return f"🔑 совпало {len(hits)} из {total}: {shown}"
+    return f"🔑 совпало всё: {shown}"
 
 
-def render_card(row: dict) -> str:
-    lines = [
-        f"<b>{row['priority']:.0f}</b> · {esc(row['title'])}",
-        f"{esc(row.get('company') or 'компания не указана')} · "
-        f"{TRACK_LABEL.get(row.get('track'), row.get('track'))}",
-        f"💰 {esc(_comp(row))}   🌍 {esc(row.get('remote_policy'))}   "
-        f"🕐 {_age(row.get('posted_at'))}",
-        _signal_line(row),
-    ]
-    if row.get("llm_fit") is not None:
-        lines.append(f"оценка судьи: {row['llm_fit']:.0f}/10")
-    for item in (row.get("evidence") or [])[:2]:
-        quote = esc(item.get("quote", ""))[:140]
-        lines.append(f"✓ «{quote}»")
-    for risk in (row.get("risks") or [])[:2]:
-        lines.append(f"⚠ {esc(risk)}")
+def _warnings(row: dict) -> list[str]:
+    out = []
     if row.get("injection_suspected"):
-        lines.append(
-            "🛑 <b>в тексте вакансии есть указания, адресованные модели.</b> "
-            "Позиция понижена, читать вручную."
-        )
-    if row.get("apply_url"):
-        lines.append(f'<a href="{esc(row["apply_url"])}">открыть вакансию</a>')
+        out.append("🛑 в тексте есть указания, адресованные модели — читать глазами")
+    if (row.get("ghost_risk") or 0) >= 0.35:
+        out.append("👻 похоже на вечную вакансию, которую не закрывают")
+    if (row.get("fan_out") or 1) >= 5:
+        out.append(f"👥 висит на {row['fan_out']} площадках — откликов там много")
+    for risk in (row.get("risks") or [])[:1]:
+        out.append(f"⚠️ {esc(risk)}")
+    return out
+
+
+def render_card(row: dict, *, is_new: bool = False) -> str:
+    """One opportunity, formatted for a five-second decision."""
+    head = "🆕 " if is_new else ""
+    lines = [f"{head}<b>{esc(row['title'])}</b>"]
+
+    facts = [esc(row.get("company") or "компания не указана")]
+    money = _money(row)
+    if money:
+        facts.append(money)
+    facts.append("🌍 удалённо")
+    facts.append(_age(row.get("posted_at")))
+    lines.append(" · ".join(facts))
+
+    match = _match_line(row)
+    if match:
+        lines.append("")
+        lines.append(match)
+
+    if row.get("llm_fit") is not None:
+        verdict = int(row["llm_fit"])
+        mark = "👍" if verdict >= 7 else "🤔" if verdict >= 5 else "👎"
+        lines.append(f"{mark} оценка {verdict}/10")
+
+    quote = next(
+        (e.get("quote") for e in (row.get("evidence") or []) if e.get("quote")), None
+    )
+    if quote:
+        lines.append(f"<i>«{esc(quote)[:150]}»</i>")
+
+    warnings = _warnings(row)
+    if warnings:
+        lines.append("")
+        lines.extend(warnings)
+
+    lines.append("")
+    lines.append(
+        f"<i>{esc(row.get('source_key'))} · "
+        f"{TRACK_LABEL.get(row.get('track'), row.get('track'))}</i>"
+    )
     return "\n".join(lines)
 
 
-def _card_keyboard(cluster_id: int) -> dict:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "✍️ Черновик", "callback_data": f"draft:{cluster_id}"},
-                {"text": "👀 Почему", "callback_data": f"why:{cluster_id}"},
-            ],
-            [
-                {"text": "⏭ Пропустить", "callback_data": f"skip:{cluster_id}"},
-                {"text": "🚫 Компания", "callback_data": f"block:{cluster_id}"},
-            ],
-        ]
-    }
+def _card_keyboard(cluster_id: int, apply_url: str | None = None) -> dict:
+    rows = [[
+        {"text": "✍️ Написать отклик", "callback_data": f"draft:{cluster_id}"},
+    ]]
+    if apply_url:
+        rows[0].append({"text": "🔗 Открыть", "url": apply_url})
+    rows.append([
+        {"text": "⏭ Не то", "callback_data": f"skip:{cluster_id}"},
+        {"text": "👀 Почему", "callback_data": f"why:{cluster_id}"},
+        {"text": "🚫 Компания", "callback_data": f"block:{cluster_id}"},
+    ])
+    return {"inline_keyboard": rows}
 
 
 def push_digest(db: Session, rows: list[dict]) -> int:
     remaining = queue_service.remaining_this_week(db)
-    header = (
-        f"📋 <b>Дайджест</b> · {len(rows)} позиций\n"
-        f"Лимит отправок на неделе: осталось {remaining}.\n"
-        f"<i>Лимит это фича: на измеренных данных конверсия падает втрое, "
-        f"когда объём растёт.</i>"
+    notify.send_message(
+        f"☀️ <b>Доброе утро. {_plural(len(rows), 'вакансия', 'вакансии', 'вакансий')} "
+        f"на сегодня</b>\n"
+        f"Отправок на неделе осталось {remaining}."
     )
-    notify.send_message(header)
     sent = 0
     for row in rows:
-        if notify.send_message(render_card(row), _card_keyboard(row["cluster_id"])):
+        if notify.send_message(
+            render_card(row), _card_keyboard(row["cluster_id"], row.get("apply_url"))
+        ):
             sent += 1
     return sent
+
+
+def push_new(db: Session, rows: list[dict]) -> int:
+    """Cards for things that appeared since the last check."""
+    if not rows:
+        return 0
+    if len(rows) > 1:
+        notify.send_message(
+            f"🆕 <b>Нашлось новое: "
+            f"{_plural(len(rows), 'вакансия', 'вакансии', 'вакансий')}</b>"
+        )
+    sent = 0
+    for row in rows:
+        if notify.send_message(
+            render_card(row, is_new=True),
+            _card_keyboard(row["cluster_id"], row.get("apply_url")),
+        ):
+            sent += 1
+    return sent
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    """Russian counts read wrong without this and it shows on every message."""
+    tail_100 = n % 100
+    tail_10 = n % 10
+    if 11 <= tail_100 <= 14:
+        word = many
+    elif tail_10 == 1:
+        word = one
+    elif 2 <= tail_10 <= 4:
+        word = few
+    else:
+        word = many
+    return f"{n} {word}"
 
 
 def push_draft_card(db: Session, draft_id: int) -> bool:
@@ -133,46 +212,58 @@ def push_draft_card(db: Session, draft_id: int) -> bool:
     cluster = db.get(JobCluster, draft.cluster_id)
     posting = queue_service._canonical(db, cluster) if cluster else None
 
-    checks = list(version.checks)
-    failed = [c for c in checks if not c.passed]
-    status = "✅ все проверки пройдены" if not failed else (
-        "⚠️ не прошли: " + ", ".join(esc(c.check) for c in failed)
-    )
-
+    failed = [c for c in version.checks if not c.passed]
     body = esc(version.body)
-    if len(body) > 2600:
-        body = body[:2600] + "…"
+    if len(body) > 2500:
+        body = body[:2500] + "…"
 
-    text = "\n".join([
-        f"✍️ <b>Черновик готов</b> · {esc(posting.title if posting else '')}",
-        f"{esc(posting.company_name if posting else '')} · "
-        f"{esc(draft.template)} · {version.word_count} слов",
-        "─" * 20,
+    lines = [
+        f"✍️ <b>Черновик готов</b>",
+        f"{esc(posting.title if posting else '')} · "
+        f"{esc(posting.company_name if posting else '')}",
+        "",
         body,
-        "─" * 20,
-        status,
-        f"факты: {', '.join(esc(k) for k in (version.fact_keys or [])) or '—'}",
-    ])
-    if version.open_questions:
-        text += "\nвопросы: " + esc("; ".join(version.open_questions[:2]))
+        "",
+    ]
+    if failed:
+        lines.append(
+            "⚠️ <b>Не прошло проверку:</b> " + ", ".join(_CHECK_RU.get(c.check, c.check)
+                                                         for c in failed)
+        )
+        lines.append("<i>Показываю всё равно: решение ваше. Проверьте отмеченное.</i>")
+    else:
+        lines.append("✅ Все проверки пройдены, факты сверены с вашим реестром.")
 
-    keyboard = {
-        "inline_keyboard": [
-            [
-                {"text": "✅ Одобрить", "callback_data": f"approve:{draft.id}"},
-                {"text": "🔁 Перегенерировать", "callback_data": f"regen:{draft.id}"},
-            ],
-            [
-                {"text": "📤 Отправил", "callback_data": f"sent:{draft.id}"},
-                {"text": "❌ Удалить", "callback_data": f"discard:{draft.id}"},
-            ],
-        ]
-    }
+    if version.open_questions:
+        lines.append(f"❓ Стоит спросить: {esc(version.open_questions[0])}")
+
+    lines.append("")
+    lines.append("<i>Бот не отправляет. Откройте форму, вставьте текст, "
+                 "отправьте сами, потом нажмите «Отправил».</i>")
+
+    keyboard = {"inline_keyboard": [
+        [{"text": "📤 Я отправил", "callback_data": f"sent:{draft.id}"}],
+        [
+            {"text": "🔁 Переписать", "callback_data": f"regen:{draft.id}"},
+            {"text": "❌ Удалить", "callback_data": f"discard:{draft.id}"},
+        ],
+    ]}
     if posting and posting.apply_url:
         keyboard["inline_keyboard"].insert(
             0, [{"text": "🔗 Открыть форму", "url": posting.apply_url}]
         )
-    return notify.send_message(text, keyboard)
+    return notify.send_message("\n".join(lines), keyboard)
+
+
+_CHECK_RU = {
+    "factguard": "обоснованность фактов",
+    "no_ledger_keys": "служебные ключи в тексте",
+    "banlist": "штампы",
+    "length": "длина",
+    "specificity": "конкретность",
+    "jd_hook": "зацепка из вакансии",
+    "novelty": "непохожесть на прошлые",
+}
 
 
 def push_retro(db: Session) -> dict:
@@ -204,32 +295,30 @@ def push_retro(db: Session) -> dict:
 
     lines = [
         "📊 <b>Итоги недели</b>",
-        f"оценено {surfaced} → черновиков {drafted} → отправлено {sent}",
-        f"ответов {replied}" + (f" ({replied / sent:.0%})" if sent else ""),
+        f"Показано {surfaced} · черновиков {drafted} · отправлено {sent}",
+        f"Ответов: {replied}" + (f" ({replied / sent:.0%})" if sent else ""),
     ]
 
     if skips:
         lines.append("\n<b>Почему вы отклоняли:</b>")
         for code, count in skips:
-            lines.append(f"  {esc(code)}: {count}")
-        # Three of the same reason is the threshold at which a pattern is worth
-        # turning into a hard gate rather than a repeated manual decision.
+            lines.append(f"  {esc(code)} — {count}")
         repeated = [f"{c} ({n})" for c, n in skips if n >= 3]
         if repeated:
             lines.append(
-                "\n💡 Повторяющиеся причины: " + ", ".join(esc(r) for r in repeated)
-                + "\nСтоит добавить правило в <code>config/rubric.yaml</code> → "
-                "<code>gates</code>, чтобы это отсеивалось до показа."
+                "\n💡 Одна причина повторяется: " + ", ".join(esc(r) for r in repeated)
+                + ". Стоит добавить это в исключения на странице «Поиск», "
+                "чтобы такое не доходило до вас вообще."
             )
 
     if sent == 0:
         lines.append(
             "\n<i>За неделю ничего не отправлено. Если так и дальше, проблема "
-            "не в скоринге, а в том, что очередь не доходит до отправки.</i>"
+            "не в подборе, а в том, что очередь не доходит до отправки.</i>"
         )
     elif replied == 0 and sent >= 10:
         lines.append(
-            "\n<i>10+ отправок без ответа. Это сигнал проверить текст черновиков "
+            "\n<i>10+ отправок без единого ответа. Это повод пересмотреть текст "
             "и реестр фактов, а не поднимать объём.</i>"
         )
 

@@ -50,6 +50,7 @@ def run_source(db: Session, source: Source) -> SourceRun:
 
     try:
         connector = build_connector(source)
+        _inject_user_queries(db, source, connector)
         result = connector.fetch()
     except Exception as exc:  # noqa: BLE001 - one bad source must not stop the sweep
         source.consecutive_failures += 1
@@ -89,6 +90,32 @@ def run_source(db: Session, source: Source) -> SourceRun:
         source.key, run.items_seen, new_count, changed_count,
     )
     return run
+
+
+# Families whose fetch is a search and therefore has to know what to search for.
+_SEARCH_FAMILIES = {"workable_search"}
+
+
+def _inject_user_queries(db: Session, source: Source, connector) -> None:
+    """Point search-type sources at the user's own keywords.
+
+    Without this the collection stage keeps running whatever phrase was written
+    into sources.yaml, and the keyword filter can only ever narrow that fixed
+    catch. The user asked to search by their tags; this is the half that makes
+    the fetch obey them too.
+    """
+    if source.family not in _SEARCH_FAMILIES:
+        return
+    filters = search_filters.load(db)
+    terms = list(filters.require_any or [])
+    if not terms:
+        return
+    # One query per keyword: the API scores a multi-word query as a phrase, so
+    # combining them returns far less than searching each.
+    connector.params = {
+        **connector.params,
+        "_queries": [f"{term} remote" for term in terms[:6]],
+    }
 
 
 def _get_or_create_company(db: Session, name: str | None) -> Company | None:

@@ -37,6 +37,11 @@ class JobCluster(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="new", nullable=False, index=True)
     # new | gated | scored | queued | drafted | actioned | archived
 
+    # When a card for this opportunity was pushed to Telegram. The point of
+    # storing it is that "new" has to mean "you have not seen this", not "it was
+    # scored recently": without it every rescore would re-announce the same jobs.
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     postings: Mapped[list["JobPosting"]] = relationship(back_populates="cluster")
 
 

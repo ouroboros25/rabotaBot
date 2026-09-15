@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
     TELEGRAM_DIGEST_HOUR: int = 8
+    # Push new matches as they are found, not only in the morning digest.
+    PUSH_NEW_MATCHES: bool = True
+    PUSH_MIN_PRIORITY: float = 0.0
+    # Per run, so a big intake does not arrive as forty separate pings.
+    PUSH_MAX_PER_RUN: int = 5
+    # Local hours when nothing is pushed. Anything found during the quiet window
+    # waits and goes out afterwards rather than being dropped.
+    PUSH_QUIET_FROM: int = 23
+    PUSH_QUIET_TO: int = 8
     TELEGRAM_RETRO_WEEKDAY: int = 6  # 0=Mon .. 6=Sun
     TELEGRAM_RETRO_HOUR: int = 18
 

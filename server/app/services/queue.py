@@ -46,19 +46,50 @@ def remaining_this_week(db: Session, profile: Profile | None = None) -> int:
 def digest_candidates(db: Session, limit: int | None = None) -> list[dict]:
     """Top-ranked clusters that have not been actioned or skipped."""
     limit = limit or settings.DAILY_DIGEST_SIZE
+    return _candidates(db, limit=limit)
+
+
+def new_candidates(db: Session, limit: int | None = None) -> list[dict]:
+    """Clusters the user has not been shown yet.
+
+    Keyed on ``notified_at`` rather than on recency of scoring: a rescore must
+    not re-announce jobs that were already sent, which is the difference between
+    a useful alert and a bot people mute.
+    """
+    limit = limit or settings.PUSH_MAX_PER_RUN
+    return _candidates(db, limit=limit, only_unnotified=True,
+                       min_priority=settings.PUSH_MIN_PRIORITY)
+
+
+def mark_notified(db: Session, cluster_ids: list[int]) -> None:
+    now = datetime.now(timezone.utc)
+    for cluster_id in cluster_ids:
+        cluster = db.get(JobCluster, cluster_id)
+        if cluster is not None:
+            cluster.notified_at = now
+
+
+def _candidates(
+    db: Session, *, limit: int, only_unnotified: bool = False,
+    min_priority: float = 0.0,
+) -> list[dict]:
     skipped = select(SkipFeedback.cluster_id)
     actioned = select(Application.cluster_id)
     filters = search_filters.load(db)
 
+    conditions = [
+        JobCluster.status.in_(("scored", "queued")),
+        JobCluster.id.notin_(skipped),
+        JobCluster.id.notin_(actioned),
+        Score.priority >= max(filters.min_priority, min_priority),
+    ]
+    if only_unnotified:
+        conditions.append(JobCluster.notified_at.is_(None))
+
     rows = db.execute(
         select(Score, JobCluster)
         .join(JobCluster, Score.cluster_id == JobCluster.id)
-        .where(
-            JobCluster.status.in_(("scored", "queued")),
-            JobCluster.id.notin_(skipped),
-            JobCluster.id.notin_(actioned),
-            Score.priority >= filters.min_priority,
-        )
+        .where(*conditions)
         .order_by(Score.priority.desc())
         .limit(limit)
     ).all()
@@ -91,6 +122,9 @@ def digest_candidates(db: Session, limit: int | None = None) -> list[dict]:
             "risks": (score.llm_verdict or {}).get("risks") or [],
             "explain": score.explain,
             "injection_suspected": score.injection_suspected,
+            "keyword_hits": (score.features or {}).get("keyword_hits") or [],
+            "keyword_total": len(filters.require_any or []) + len(filters.boost or []),
+            "comp_period": posting.comp_period,
         })
     return out
 

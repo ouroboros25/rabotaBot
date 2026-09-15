@@ -67,6 +67,47 @@ def draft_create(cluster_id: int, template: str | None = None) -> dict:
         return {"ok": True, "draft_id": draft.id}
 
 
+@celery_app.task(name="rabota.notify.new")
+def notify_new() -> dict:
+    """Push matches the user has not seen yet.
+
+    Runs often; sends rarely. Everything that limits it is deliberate: a cap per
+    run so a large intake does not arrive as forty pings, a quiet window so it
+    does not wake anyone, and a notified_at marker so a rescore never
+    re-announces the same job.
+    """
+    from app.bot.cards import push_new
+
+    if not settings.PUSH_NEW_MATCHES:
+        return {"sent": 0, "reason": "disabled"}
+    if _in_quiet_hours():
+        return {"sent": 0, "reason": "quiet hours"}
+
+    with session_scope() as db:
+        rows = queue_service.new_candidates(db)
+        if not rows:
+            return {"sent": 0}
+        sent = push_new(db, rows)
+        queue_service.mark_notified(db, [r["cluster_id"] for r in rows])
+        return {"sent": sent}
+
+
+def _in_quiet_hours() -> bool:
+    from zoneinfo import ZoneInfo
+
+    try:
+        now = datetime.now(ZoneInfo(settings.TZ))
+    except Exception:  # noqa: BLE001 - a bad TZ must not stop notifications
+        now = datetime.now()
+    start, end = settings.PUSH_QUIET_FROM, settings.PUSH_QUIET_TO
+    if start == end:
+        return False
+    if start < end:
+        return start <= now.hour < end
+    # Window wraps midnight.
+    return now.hour >= start or now.hour < end
+
+
 @celery_app.task(name="rabota.digest.daily")
 def digest_daily() -> dict:
     from app.bot.cards import push_digest
@@ -74,9 +115,14 @@ def digest_daily() -> dict:
     with session_scope() as db:
         rows = queue_service.digest_candidates(db)
         if not rows:
-            notify.send_message("Сегодня нечего показать: очередь пуста.")
+            notify.send_message(
+                "☀️ Сегодня показать нечего: под ваши теги ничего нового не нашлось."
+            )
             return {"sent": 0}
         push_digest(db, rows)
+        # The digest counts as having shown them, so the new-match push does not
+        # immediately repeat the same cards.
+        queue_service.mark_notified(db, [r["cluster_id"] for r in rows])
         return {"sent": len(rows)}
 
 
